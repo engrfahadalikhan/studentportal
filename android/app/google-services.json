@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "348949617917",
+    "project_id": "fahad1-bbd65",
+    "storage_bucket": "fahad1-bbd65.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:348949617917:android:d49f1dd988c2a91f74f294",
+        "android_client_info": {
+          "package_name": "com.example.fahad1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA9z47LknaeTYQG7JBFw0ntL_COB9NH7V0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
