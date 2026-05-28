@@ -8,7 +8,7 @@ extension AppRoleX on AppRole {
       case AppRole.admin:
         return 'Admin';
       case AppRole.faculty:
-        return 'Faculty';
+        return 'Teacher';
       case AppRole.student:
         return 'Student';
     }
@@ -19,7 +19,7 @@ extension AppRoleX on AppRole {
       case AppRole.admin:
         return 'Control Center';
       case AppRole.faculty:
-        return 'Faculty Workspace';
+        return 'Teacher Workspace';
       case AppRole.student:
         return 'Student Hub';
     }
@@ -30,6 +30,7 @@ extension AppRoleX on AppRole {
       case 'admin':
         return AppRole.admin;
       case 'faculty':
+      case 'teacher':
         return AppRole.faculty;
       case 'student':
       default:

@@ -57,6 +57,7 @@ class DefaultFirebaseOptions {
     appId: '1:348949617917:android:d49f1dd988c2a91f74f294',
     messagingSenderId: '348949617917',
     projectId: 'fahad1-bbd65',
+    databaseURL: 'https://fahad1-bbd65-default-rtdb.firebaseio.com',
     storageBucket: 'fahad1-bbd65.firebasestorage.app',
   );
 }

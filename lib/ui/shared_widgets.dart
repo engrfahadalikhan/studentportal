@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 class BusyView extends StatelessWidget {
@@ -75,24 +74,15 @@ class StatusScaffold extends StatelessWidget {
 }
 
 String friendlyError(Object? error) {
-  if (error is FirebaseAuthException) {
-    switch (error.code) {
-      case 'invalid-email':
-        return 'The email address is not valid.';
-      case 'invalid-credential':
-      case 'wrong-password':
-      case 'user-not-found':
-        return 'Email or password is incorrect.';
-      case 'email-already-in-use':
-        return 'That email is already being used.';
-      case 'weak-password':
-        return 'Choose a stronger password with at least 6 characters.';
-      case 'network-request-failed':
-        return 'Network error while contacting Firebase. Check your connection.';
-      default:
-        return error.message ?? 'Something went wrong.';
-    }
+  if (error is PortalAuthException) {
+    return error.message;
   }
 
   return error?.toString() ?? 'Something went wrong.';
+}
+
+class PortalAuthException implements Exception {
+  const PortalAuthException(this.message);
+
+  final String message;
 }

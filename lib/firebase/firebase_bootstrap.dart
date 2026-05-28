@@ -14,9 +14,23 @@ class FirebaseBootstrap {
 
   static Future<void> initialize() async {
     try {
-      final app = await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
+      FirebaseApp app;
+
+      if (Firebase.apps.isNotEmpty) {
+        app = Firebase.app();
+      } else {
+        try {
+          app = await Firebase.initializeApp(
+            options: DefaultFirebaseOptions.currentPlatform,
+          );
+        } on FirebaseException catch (error) {
+          if (error.code != 'duplicate-app') {
+            rethrow;
+          }
+
+          app = Firebase.app();
+        }
+      }
 
       _status = FirebaseConnectionStatus(
         projectId: app.options.projectId,

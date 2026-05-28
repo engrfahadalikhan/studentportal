@@ -1,5 +1,5 @@
-name: fahad1
-description: "A new Flutter project connected to Firebase."
+name: teacher_student_assessment_app
+description: "Merged Flutter teacher-student assessment and student portal app."
 
 publish_to: 'none'  # Remove this line if you wish to publish to pub.dev
 
@@ -12,12 +12,22 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Firebase dependencies (updated to match version compatibility)
-  firebase_core: ^3.0.0  # firebase_core version 3.0.0 or above
-  firebase_auth: ^5.7.0  # Updated firebase_auth to a compatible version
-  cloud_firestore: ^5.0.0
+  firebase_core: ^3.0.0
+  firebase_database: ^11.1.0
+  pdf: ^3.11.1
+  printing: ^5.14.2
+  mobile_scanner: ^7.2.0
+  sqflite: ^2.4.2
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  connectivity_plus: ^7.1.1
+  http: ^1.6.0
+  shared_preferences: ^2.5.5
+  intl: ^0.20.2
+  qr_flutter: ^4.1.0
+  archive: ^4.0.9
+  file_picker: ^8.1.4
 
-  # Cupertino Icons for iOS style icons
   cupertino_icons: ^1.0.8
 
 dev_dependencies:
@@ -25,6 +35,16 @@ dev_dependencies:
     sdk: flutter
 
   flutter_lints: ^5.0.0
+  sqflite_common_ffi: ^2.3.5
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/image1.png
+    - assets/cs_logo.jpeg
+    - assets/fonts/times.ttf
+    - assets/fonts/timesbd.ttf
+    - assets/fonts/timesi.ttf
+    - assets/fonts/timesbi.ttf
+    - assets/qr_seed.json
