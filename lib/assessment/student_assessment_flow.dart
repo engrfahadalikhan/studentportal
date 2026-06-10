@@ -1,19 +1,34 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
 import '../ui/student_portal_shell.dart';
-import 'assessment_models.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
-enum _StudentAssessmentStage { scan, verify, rules, attempt, submitted, error }
+import 'assessment_models.dart';
+import 'assessment_qr_codec.dart';
+import 'submission_qr_codec.dart';
+
+enum _StudentAssessmentStage {
+  scan,
+  verify,
+  rules,
+  attempt,
+  assignmentSubmit,
+  submitted,
+  error,
+}
 
 enum StudentAssessmentError {
   invalidQr,
   expiredQr,
   notStarted,
+  notEnrolled,
   alreadySubmitted,
   networkDisconnected,
   duplicateLogin,
@@ -30,6 +45,8 @@ extension _StudentAssessmentErrorX on StudentAssessmentError {
         return 'QR Code Expired';
       case StudentAssessmentError.notStarted:
         return 'Assessment Not Started';
+      case StudentAssessmentError.notEnrolled:
+        return 'Not Enrolled';
       case StudentAssessmentError.alreadySubmitted:
         return 'Already Submitted';
       case StudentAssessmentError.networkDisconnected:
@@ -51,6 +68,9 @@ extension _StudentAssessmentErrorX on StudentAssessmentError {
         return 'This QR code is no longer active. Ask your teacher to generate a fresh code.';
       case StudentAssessmentError.notStarted:
         return 'Your teacher has not started this assessment yet.';
+      case StudentAssessmentError.notEnrolled:
+        return 'This assessment is for a different program, semester, or section. '
+            'You are not enrolled in the class this paper was created for.';
       case StudentAssessmentError.alreadySubmitted:
         return 'This student attempt has already been submitted.';
       case StudentAssessmentError.networkDisconnected:
@@ -123,6 +143,7 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
             controller: _codeController,
             repository: widget.repository,
             onVerify: _verifyCode,
+            onScanned: _handleScannedRaw,
             onPreviewError: _showError,
           ),
           _StudentAssessmentStage.verify => _VerifyScreen(
@@ -133,8 +154,13 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
             onRefresh: _refreshVerification,
             onDemoApprove: _demoApprove,
             onBack: () => setState(() => _stage = _StudentAssessmentStage.scan),
-            onContinue: () =>
-                setState(() => _stage = _StudentAssessmentStage.rules),
+            onContinue: () => setState(() {
+              // Assignments go straight to a submission screen (no locked
+              // proctoring). Quizzes/exams go through the rules + locked flow.
+              _stage = _assessment!.type == AssessmentType.assignment
+                  ? _StudentAssessmentStage.assignmentSubmit
+                  : _StudentAssessmentStage.rules;
+            }),
           ),
           _StudentAssessmentStage.rules => _RulesScreen(
             assessment: _assessment!,
@@ -157,8 +183,24 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
               });
             },
           ),
+          _StudentAssessmentStage.assignmentSubmit => _AssignmentSubmitScreen(
+            assessment: _assessment!,
+            student: _student,
+            repository: widget.repository,
+            onBack: () =>
+                setState(() => _stage = _StudentAssessmentStage.verify),
+            onSubmitted: () {
+              setState(() {
+                _lastWarningCount = 0;
+                _autoSubmitted = false;
+                _stage = _StudentAssessmentStage.submitted;
+              });
+            },
+          ),
           _StudentAssessmentStage.submitted => _SubmittedScreen(
             assessment: _assessment!,
+            student: _student,
+            repository: widget.repository,
             warningCount: _lastWarningCount,
             autoSubmitted: _autoSubmitted,
             onHome: _reset,
@@ -170,6 +212,32 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
         };
       },
     );
+  }
+
+  /// Handles a raw value coming from the camera or the transfer field. If it
+  /// is an offline AUST question-paper QR, decode the whole paper locally and
+  /// import it (no internet). Otherwise treat it as a plain assessment code.
+  void _handleScannedRaw(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) {
+      return;
+    }
+    if (AssessmentQrCodec.looksLikeAssessmentQr(value)) {
+      try {
+        final decoded = AssessmentQrCodec.decode(value);
+        final imported = widget.repository.importSharedAssessment(decoded);
+        _codeController.text = imported.qrCode;
+      } on FormatException {
+        _showError(StudentAssessmentError.invalidQr);
+        return;
+      } catch (_) {
+        _showError(StudentAssessmentError.invalidQr);
+        return;
+      }
+    } else {
+      _codeController.text = value;
+    }
+    _verifyCode();
   }
 
   void _verifyCode() {
@@ -184,6 +252,14 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
     }
     if (assessment.status == AssessmentStatus.completed) {
       _showError(StudentAssessmentError.expiredQr);
+      return;
+    }
+
+    // Enrollment check: the student must be in the program/semester/section
+    // this assessment was created for. This prevents students from other
+    // sections scanning a paper meant for a different class.
+    if (!_isStudentEnrolled(assessment)) {
+      _showError(StudentAssessmentError.notEnrolled);
       return;
     }
 
@@ -236,6 +312,36 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
     _refreshVerification();
   }
 
+  /// Returns true when the logged-in student's program/semester/section
+  /// matches the assessment. Both are normalised to lowercase + trimmed so
+  /// minor casing differences in the enrollment data don't block access.
+  ///
+  /// If the assessment has an empty program/semester/section (e.g. a paper
+  /// shared via a one-to-one offline QR with no class restriction) it is
+  /// always accessible.
+  bool _isStudentEnrolled(Assessment assessment) {
+    String n(String s) => s.trim().toLowerCase();
+
+    final ap = n(assessment.program);
+    final as_ = n(assessment.semester);
+    final ase = n(assessment.section);
+
+    // No restriction on the paper → open to all.
+    if (ap.isEmpty && as_.isEmpty && ase.isEmpty) {
+      return true;
+    }
+
+    final sp = n(widget.student.program);
+    final ss = n(widget.student.semester);
+    final sse = n(widget.student.section);
+
+    final programOk = ap.isEmpty || sp.contains(ap) || ap.contains(sp);
+    final semesterOk = as_.isEmpty || ss == as_;
+    final sectionOk = ase.isEmpty || sse == ase;
+
+    return programOk && semesterOk && sectionOk;
+  }
+
   void _showError(StudentAssessmentError error) {
     setState(() {
       _error = error;
@@ -254,54 +360,165 @@ class _StudentAssessmentFlowState extends State<StudentAssessmentFlow> {
   }
 }
 
-class _ScanScreen extends StatelessWidget {
+class _ScanScreen extends StatefulWidget {
   const _ScanScreen({
     required this.controller,
     required this.repository,
     required this.onVerify,
+    required this.onScanned,
     required this.onPreviewError,
   });
 
   final TextEditingController controller;
   final AppRepository repository;
   final VoidCallback onVerify;
+  final ValueChanged<String> onScanned;
   final ValueChanged<StudentAssessmentError> onPreviewError;
 
   @override
+  State<_ScanScreen> createState() => _ScanScreenState();
+}
+
+class _ScanScreenState extends State<_ScanScreen> {
+  MobileScannerController? _scannerController;
+  bool _cameraOpen = false;
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    _scannerController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _openCamera() async {
+    _handled = false;
+    _scannerController ??= MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      formats: const [BarcodeFormat.qrCode],
+    );
+    setState(() => _cameraOpen = true);
+    await _scannerController?.start();
+  }
+
+  Future<void> _closeCamera() async {
+    await _scannerController?.stop();
+    if (!mounted) return;
+    setState(() => _cameraOpen = false);
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    final raw = capture.barcodes
+        .map((b) => b.rawValue?.trim() ?? '')
+        .firstWhere((v) => v.isNotEmpty, orElse: () => '');
+    if (raw.isEmpty) return;
+    _handled = true;
+    unawaited(_scannerController?.stop());
+    setState(() => _cameraOpen = false);
+    widget.onScanned(raw);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final active = repository.assessments.where(
+    final active = widget.repository.assessments.where(
       (assessment) => assessment.status == AssessmentStatus.active,
     );
 
     return _StudentScroll(
       children: [
         const _StudentHeader(
-          title: 'Student assessment',
-          subtitle: 'Scan the classroom QR code or enter the assessment code.',
+          title: 'Scan to attempt',
+          subtitle:
+              'Point your camera at the teacher\'s QR. The whole paper loads on your phone — no internet needed.',
           icon: Icons.qr_code_scanner_outlined,
         ),
         const SizedBox(height: 16),
         _StudentPanel(
-          title: 'QR scan',
+          title: 'QR scanner',
           child: Column(
             children: [
-              Container(
-                width: 170,
-                height: 170,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: PortalColors.blueBorder, width: 2),
-                  color: const Color(0xFFF8FAFC),
+              if (_cameraOpen)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        MobileScanner(
+                          controller: _scannerController,
+                          onDetect: _onDetect,
+                        ),
+                        IgnorePointer(
+                          child: Center(
+                            child: Container(
+                              width: 200,
+                              height: 200,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 3,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  width: double.infinity,
+                  height: 170,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    border:
+                        Border.all(color: PortalColors.blueBorder, width: 2),
+                    color: const Color(0xFFF8FAFC),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.qr_code_scanner_outlined,
+                        size: 60,
+                        color: PortalColors.brandBlue,
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        'Camera is off',
+                        style: TextStyle(color: PortalColors.subtleText),
+                      ),
+                    ],
+                  ),
                 ),
-                child: const Icon(
-                  Icons.qr_code_scanner_outlined,
-                  size: 70,
-                  color: PortalColors.brandBlue,
-                ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: _cameraOpen
+                    ? OutlinedButton.icon(
+                        onPressed: _closeCamera,
+                        icon: const Icon(Icons.close_rounded),
+                        label: const Text('Close camera'),
+                      )
+                    : FilledButton.icon(
+                        onPressed: _openCamera,
+                        icon: const Icon(Icons.photo_camera_rounded),
+                        label: const Text('Open camera scanner'),
+                      ),
               ),
-              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _StudentPanel(
+          title: 'Enter code manually',
+          child: Column(
+            children: [
               TextField(
-                controller: controller,
+                controller: widget.controller,
                 decoration: const InputDecoration(
                   labelText: 'Assessment code',
                   prefixIcon: Icon(Icons.key_outlined),
@@ -309,7 +526,7 @@ class _ScanScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: onVerify,
+                onPressed: widget.onVerify,
                 icon: const Icon(Icons.verified_outlined),
                 label: const Text('Verify assessment'),
               ),
@@ -317,8 +534,8 @@ class _ScanScreen extends StatelessWidget {
               if (active.isNotEmpty)
                 OutlinedButton.icon(
                   onPressed: () {
-                    controller.text = active.first.qrCode;
-                    onVerify();
+                    widget.controller.text = active.first.qrCode;
+                    widget.onVerify();
                   },
                   icon: const Icon(Icons.qr_code_2_outlined),
                   label: const Text('Use latest active QR'),
@@ -335,7 +552,7 @@ class _ScanScreen extends StatelessWidget {
             children: StudentAssessmentError.values.map((error) {
               return ActionChip(
                 label: Text(error.title),
-                onPressed: () => onPreviewError(error),
+                onPressed: () => widget.onPreviewError(error),
               );
             }).toList(),
           ),
@@ -893,29 +1110,250 @@ class _AnswerInput extends StatelessWidget {
         );
       case QuestionType.fileUpload:
         return OutlinedButton.icon(
-          onPressed: () => onChanged('File upload placeholder selected'),
+          onPressed: () async {
+            final result = await FilePicker.platform.pickFiles(
+              withData: false,
+            );
+            if (result == null || result.files.isEmpty) return;
+            onChanged(result.files.first.name);
+          },
           icon: const Icon(Icons.upload_file_outlined),
-          label: Text(value ?? 'File upload placeholder'),
+          label: Text(value ?? 'Attach file'),
         );
     }
+  }
+}
+
+/// Assignment submission screen — shown instead of the locked quiz attempt
+/// when the assessment type is `assignment`. Students read the tasks, type
+/// their answer, optionally attach a file, and submit. Graded manually by the
+/// teacher later (no auto-grading, no proctoring).
+class _AssignmentSubmitScreen extends StatefulWidget {
+  const _AssignmentSubmitScreen({
+    required this.assessment,
+    required this.student,
+    required this.repository,
+    required this.onBack,
+    required this.onSubmitted,
+  });
+
+  final Assessment assessment;
+  final AssessmentStudent student;
+  final AppRepository repository;
+  final VoidCallback onBack;
+  final VoidCallback onSubmitted;
+
+  @override
+  State<_AssignmentSubmitScreen> createState() =>
+      _AssignmentSubmitScreenState();
+}
+
+class _AssignmentSubmitScreenState extends State<_AssignmentSubmitScreen> {
+  final _answerController = TextEditingController();
+  String? _attachedFileName;
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _answerController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickFile() async {
+    final result = await FilePicker.platform.pickFiles(withData: false);
+    if (result == null || result.files.isEmpty) return;
+    setState(() => _attachedFileName = result.files.first.name);
+  }
+
+  void _submit() {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    widget.repository.submitAssessment(
+      assessment: widget.assessment,
+      student: widget.student,
+      answers: {
+        'text': _answerController.text.trim(),
+        if (_attachedFileName != null) 'file': _attachedFileName!,
+      },
+      warningCount: 0,
+      flags: const [],
+      status: AttemptStatus.submitted,
+    );
+    widget.onSubmitted();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dueLabel =
+        '${widget.assessment.endTime.day}/${widget.assessment.endTime.month}/${widget.assessment.endTime.year}';
+    return _StudentScroll(
+      children: [
+        const _StudentHeader(
+          title: 'Assignment',
+          subtitle: 'Read the tasks, write your answer, attach a file, submit.',
+          icon: Icons.assignment_outlined,
+        ),
+        const SizedBox(height: 16),
+        _StudentPanel(
+          title: widget.assessment.title,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _InfoChip('Marks', '${widget.assessment.totalMarks}'),
+                  _InfoChip('Tasks', '${widget.assessment.questions.length}'),
+                  _InfoChip('Due', dueLabel),
+                ],
+              ),
+              if (widget.assessment.instructions.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  widget.assessment.instructions,
+                  style: const TextStyle(color: PortalColors.subtleText),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (widget.assessment.questions.isNotEmpty)
+          _StudentPanel(
+            title: 'Tasks',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < widget.assessment.questions.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${i + 1}. ',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        Expanded(
+                          child: Text(
+                            '${widget.assessment.questions[i].question}  '
+                            '(${widget.assessment.questions[i].marks} marks)',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 16),
+        _StudentPanel(
+          title: 'Your submission',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _answerController,
+                minLines: 4,
+                maxLines: 10,
+                decoration: const InputDecoration(
+                  labelText: 'Type your answer',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _pickFile,
+                    icon: const Icon(Icons.attach_file_rounded),
+                    label: const Text('Attach file'),
+                  ),
+                  const SizedBox(width: 10),
+                  if (_attachedFileName != null)
+                    Expanded(
+                      child: Text(
+                        _attachedFileName!,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: PortalColors.subtleText,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _submitting ? null : widget.onBack,
+                      child: const Text('Back'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _submitting ? null : _submit,
+                      icon: _submitting
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send_rounded),
+                      label: Text(_submitting ? 'Submitting…' : 'Submit'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 }
 
 class _SubmittedScreen extends StatelessWidget {
   const _SubmittedScreen({
     required this.assessment,
+    required this.student,
+    required this.repository,
     required this.warningCount,
     required this.autoSubmitted,
     required this.onHome,
   });
 
   final Assessment assessment;
+  final AssessmentStudent student;
+  final AppRepository repository;
   final int warningCount;
   final bool autoSubmitted;
   final VoidCallback onHome;
 
   @override
   Widget build(BuildContext context) {
+    // Look up the submission the student just created.
+    final submission = repository
+        .submissionsForAssessment(assessment.id)
+        .where((s) => s.studentId == student.id)
+        .fold<AssessmentSubmission?>(
+          null,
+          (latest, s) =>
+              latest == null ||
+              (s.submittedAt ?? DateTime(0))
+                  .isAfter(latest.submittedAt ?? DateTime(0))
+              ? s
+              : latest,
+        );
+
+    final qrPayload =
+        submission == null ? null : SubmissionQrCodec.encode(submission);
+
     return _StudentScroll(
       children: [
         _StudentPanel(
@@ -929,17 +1367,18 @@ class _SubmittedScreen extends StatelessWidget {
                 color: autoSubmitted
                     ? const Color(0xFFB45309)
                     : const Color(0xFF0F766E),
-                size: 70,
+                size: 60,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               Text(
                 assessment.title,
                 textAlign: TextAlign.center,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               Wrap(
                 alignment: WrapAlignment.center,
                 spacing: 8,
@@ -947,15 +1386,87 @@ class _SubmittedScreen extends StatelessWidget {
                 children: [
                   _InfoChip('Questions', '${assessment.questions.length}'),
                   _InfoChip('Warnings', '$warningCount'),
-                  _InfoChip(
-                    'Result',
-                    assessment.settings.showResultAfterSubmission
-                        ? 'Visible'
-                        : 'Teacher review',
-                  ),
                 ],
               ),
-              const SizedBox(height: 18),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        // ---- Submission QR ------------------------------------------------
+        _StudentPanel(
+          title: 'Show this QR to your teacher',
+          child: Column(
+            children: [
+              if (qrPayload != null)
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: PortalColors.cardBorder),
+                  ),
+                  child: QrImageView(
+                    data: qrPayload,
+                    version: QrVersions.auto,
+                    size: 240,
+                    backgroundColor: Colors.white,
+                    errorCorrectionLevel: QrErrorCorrectLevel.M,
+                  ),
+                )
+              else
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF3CD),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFFCE8A6)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded,
+                          color: Color(0xFFB45309)),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Submission has too many long answers to fit in one QR. '
+                          'Show this screen to your teacher manually.',
+                          style: TextStyle(color: Color(0xFFB45309)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAFBEF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFB9F4C9)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.wifi_off_rounded,
+                        size: 16, color: Color(0xFF0F766E)),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Your answers are packed inside this QR. '
+                        'Teacher scans it — no internet needed.',
+                        style: TextStyle(
+                          color: Color(0xFF0F766E),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
               FilledButton.icon(
                 onPressed: onHome,
                 icon: const Icon(Icons.home_outlined),

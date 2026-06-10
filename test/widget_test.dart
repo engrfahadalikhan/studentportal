@@ -85,8 +85,8 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
 
       expect(find.text('Home'), findsOneWidget);
-      expect(find.text('Assessment Generator'), findsOneWidget);
-      expect(find.text('Exam Attendance'), findsAtLeastNWidgets(1));
+      expect(find.text('Assessments'), findsAtLeastNWidgets(1));
+      expect(find.text('Exam'), findsAtLeastNWidgets(1));
       expect(
         find.text('Welcome, Teacher ${teacher.name}'),
         findsAtLeastNWidgets(1),

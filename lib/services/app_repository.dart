@@ -141,7 +141,7 @@ class AppRepository extends ChangeNotifier {
 
     if (role == AppRole.admin) {
       if (normalizedUsername.toLowerCase() != 'admin' ||
-          normalizedPassword != '1234') {
+          normalizedPassword != 'pdfpakistan') {
         throw const PortalAuthException('Admin username or password is wrong.');
       }
       _currentSession = PortalSession.admin();
@@ -508,6 +508,19 @@ class AppRepository extends ChangeNotifier {
     );
   }
 
+  /// Inserts a paper received offline (decoded from a scanned QR) into the
+  /// in-memory store so the attempt flow, Live, and Results can reference it.
+  /// If a paper with the same id already exists it is returned unchanged.
+  Assessment importSharedAssessment(Assessment assessment) {
+    final existing = assessmentById(assessment.id);
+    if (existing != null) {
+      return existing;
+    }
+    _assessments.insert(0, assessment);
+    notifyListeners();
+    return assessment;
+  }
+
   List<AssessmentStudent> studentsForAssessment(Assessment assessment) {
     return _assessmentStudents
         .where(
@@ -669,6 +682,11 @@ class AppRepository extends ChangeNotifier {
           : _submissions[existingIndex].startedAt,
       submittedAt: DateTime.now(),
       answers: answers,
+      // Marks are NOT computed here. The student's device has no answer key
+      // (the QR is answer-safe), so grading happens at the teacher's end via
+      // [objectiveAutoMarks] / [gradeSubmission]. A fresh submission starts
+      // ungraded.
+      marks: null,
       warningCount: warningCount,
       flags: flags,
       progress: progress,
@@ -680,6 +698,74 @@ class AppRepository extends ChangeNotifier {
     } else {
       _submissions[existingIndex] = submission;
     }
+    notifyListeners();
+  }
+
+  /// Computes the objective score for [answers] against the answer key in
+  /// [authoritative] (the teacher's own copy of the assessment — the only copy
+  /// that holds correct answers). Returns the summed marks, or null when the
+  /// paper has no auto-gradable questions (e.g. an assignment) — meaning it
+  /// needs fully manual grading.
+  ///
+  /// This runs at the teacher's end (Results / grade sheet), never on the
+  /// student device, because the student's scanned copy is answer-free.
+  int? objectiveAutoMarks(
+    Assessment authoritative,
+    Map<String, String> answers,
+  ) {
+    var hasGradable = false;
+    var earned = 0;
+    for (final question in authoritative.questions) {
+      final correct = question.correctAnswer?.trim() ?? '';
+      if (correct.isEmpty) {
+        continue;
+      }
+      hasGradable = true;
+      final given = (answers[question.id] ?? '').trim();
+      if (given.isNotEmpty && given.toLowerCase() == correct.toLowerCase()) {
+        earned += question.marks;
+      }
+    }
+    return hasGradable ? earned : null;
+  }
+
+  /// Imports a submission received via a scanned QR code (offline two-phone
+  /// return path). If a submission for the same assessment+student already
+  /// exists it is replaced, so rescans are idempotent.
+  AssessmentSubmission importSubmission(AssessmentSubmission submission) {
+    final existing = _submissions.indexWhere(
+      (s) =>
+          s.assessmentId == submission.assessmentId &&
+          s.studentId == submission.studentId,
+    );
+    if (existing == -1) {
+      _submissions.add(submission);
+    } else {
+      // Keep the id stable so existing grade references survive.
+      _submissions[existing] = submission.copyWith(
+        id: _submissions[existing].id,
+      );
+    }
+    notifyListeners();
+    return submission;
+  }
+
+  /// Manually sets the marks for a submission (used to grade assignments and
+  /// long-answer questions the teacher reviews by hand).
+  void gradeSubmission({
+    required String assessmentId,
+    required String studentId,
+    required int marks,
+  }) {
+    final index = _submissions.indexWhere(
+      (submission) =>
+          submission.assessmentId == assessmentId &&
+          submission.studentId == studentId,
+    );
+    if (index == -1) {
+      return;
+    }
+    _submissions[index] = _submissions[index].copyWith(marks: marks);
     notifyListeners();
   }
 

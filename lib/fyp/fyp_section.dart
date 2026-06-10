@@ -694,9 +694,9 @@ class _ProposalCard extends StatelessWidget {
       borderColor: PortalColors.blueBorder,
       header: Row(
         children: [
-          const _Pill(
+          _Pill(
             label: 'PROP',
-            bg: Color(0xFFE8EDFF),
+            bg: const Color(0xFFE8EDFF),
             fg: PortalColors.brandBlue,
           ),
           const SizedBox(width: 10),
@@ -2587,7 +2587,7 @@ Future<void> _showQrSheet(
             SelectableText(
               code,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w800,
                 color: PortalColors.brandBlue,
               ),

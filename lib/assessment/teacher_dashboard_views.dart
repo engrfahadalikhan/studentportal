@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../theme/theme_picker.dart';
 import '../ui/student_portal_shell.dart';
 import 'teacher_dashboard_models.dart';
 import 'teacher_dashboard_theme.dart';
@@ -31,6 +32,7 @@ class TeacherDashboardHomeView extends StatelessWidget {
         _HeroCard(
           title: 'Welcome, Teacher ${data.teacherName}',
           icon: Icons.co_present_outlined,
+          trailing: const AppearanceButton(color: Colors.white),
           children: [
             _MetricTile(
               icon: Icons.class_outlined,
@@ -158,6 +160,7 @@ class ExamAttendanceHomeView extends StatelessWidget {
     required this.data,
     required this.onBack,
     required this.onScan,
+    required this.onQrAttendance,
     required this.onViewAttendance,
     required this.onShareAttendance,
     required this.onSharingStats,
@@ -166,6 +169,7 @@ class ExamAttendanceHomeView extends StatelessWidget {
   final ExamAttendanceDashboardData data;
   final VoidCallback onBack;
   final VoidCallback onScan;
+  final VoidCallback onQrAttendance;
   final VoidCallback onViewAttendance;
   final VoidCallback onShareAttendance;
   final VoidCallback onSharingStats;
@@ -206,6 +210,11 @@ class ExamAttendanceHomeView extends StatelessWidget {
               icon: Icons.qr_code_scanner_rounded,
               title: 'Scan QR Code',
               onTap: onScan,
+            ),
+            _MenuCard(
+              icon: Icons.how_to_reg_rounded,
+              title: 'QR Attendance Scanner',
+              onTap: onQrAttendance,
             ),
             _MenuCard(
               icon: Icons.edit_calendar_outlined,
@@ -1269,19 +1278,28 @@ class _HeroCard extends StatelessWidget {
     required this.title,
     required this.icon,
     required this.children,
+    this.trailing,
   });
 
   final String title;
   final IconData icon;
   final List<Widget> children;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: PortalColors.brandBlue,
+        gradient: PortalColors.heroGradient,
         borderRadius: BorderRadius.circular(TeacherDashboardTheme.cardRadius),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.16),
+            blurRadius: 22,
+            offset: const Offset(0, 12),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1299,6 +1317,7 @@ class _HeroCard extends StatelessWidget {
                   ),
                 ),
               ),
+              if (trailing != null) trailing!,
             ],
           ),
           const SizedBox(height: 16),

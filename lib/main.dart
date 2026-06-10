@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'features/feature_visibility_service.dart';
 import 'services/app_repository.dart';
@@ -8,6 +10,12 @@ import 'ui/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux)) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
   await Future.wait([
     FeatureVisibilityService.instance.load(),
     ThemeController.instance.load(),
@@ -39,8 +47,8 @@ class _StudentPortalAppState extends State<StudentPortalApp> {
         return MaterialApp(
           title: 'AUST Student Portal',
           debugShowCheckedModeBanner: false,
-          theme: AppTheme.light(),
-          darkTheme: AppTheme.dark(),
+          theme: AppTheme.light(ThemeController.instance.palette),
+          darkTheme: AppTheme.dark(ThemeController.instance.palette),
           themeMode: ThemeController.instance.mode,
           home: AppShell(repository: _repository),
         );

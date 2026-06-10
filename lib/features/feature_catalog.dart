@@ -29,6 +29,11 @@ enum FeatureKey {
   placement,
   // ---- Existing core modules (admin can also hide these) ------------------
   fyp,
+  // ---- Teacher dashboard areas (admin enables per teacher; OFF by default) -
+  teacherModules,
+  teacherAssess,
+  teacherLive,
+  teacherResults,
 }
 
 extension FeatureKeyX on FeatureKey {
@@ -74,6 +79,14 @@ extension FeatureKeyX on FeatureKey {
         return 'placement';
       case FeatureKey.fyp:
         return 'fyp';
+      case FeatureKey.teacherModules:
+        return 'teacher_modules';
+      case FeatureKey.teacherAssess:
+        return 'teacher_assess';
+      case FeatureKey.teacherLive:
+        return 'teacher_live';
+      case FeatureKey.teacherResults:
+        return 'teacher_results';
     }
   }
 
@@ -301,6 +314,48 @@ const List<FeatureMeta> featureCatalog = [
     color: Color(0xFF6E27C5),
     audience: FeatureAudience.both,
     tier: 1,
+  ),
+  // Teacher dashboard areas — admin must turn these ON for teachers (they are
+  // OFF by default). Excluded from the teacher modules grid; they gate the
+  // home modules section and the Assess / Live / Results bottom-nav tabs.
+  FeatureMeta(
+    key: FeatureKey.teacherModules,
+    label: 'Teacher: Modules section',
+    description:
+        'The modules grid on the teacher home (Grades, Time Table, Course Materials, etc.).',
+    icon: Icons.widgets_outlined,
+    color: Color(0xFF4F46E5),
+    audience: FeatureAudience.teacher,
+    tier: 0,
+  ),
+  FeatureMeta(
+    key: FeatureKey.teacherAssess,
+    label: 'Teacher: Assessments (Assess)',
+    description:
+        'The Assess tab — create quizzes / assignments and share the offline QR.',
+    icon: Icons.assignment_outlined,
+    color: Color(0xFF0D9488),
+    audience: FeatureAudience.teacher,
+    tier: 0,
+  ),
+  FeatureMeta(
+    key: FeatureKey.teacherLive,
+    label: 'Teacher: Live monitoring',
+    description: 'The Live tab — watch student attempts in real time.',
+    icon: Icons.monitor_heart_outlined,
+    color: Color(0xFFB45309),
+    audience: FeatureAudience.teacher,
+    tier: 0,
+  ),
+  FeatureMeta(
+    key: FeatureKey.teacherResults,
+    label: 'Teacher: Results & grading',
+    description:
+        'The Results tab — grade submissions and scan student answer QRs.',
+    icon: Icons.grade_outlined,
+    color: Color(0xFFB91C1C),
+    audience: FeatureAudience.teacher,
+    tier: 0,
   ),
 ];
 

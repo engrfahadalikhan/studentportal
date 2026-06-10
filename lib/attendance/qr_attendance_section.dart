@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:archive/archive.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -15,6 +16,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
 const String _transferQrPrefix = 'CSEXAM|QXFER|1|';
+
+bool get _cameraScannerSupported =>
+    kIsWeb ||
+    defaultTargetPlatform == TargetPlatform.android ||
+    defaultTargetPlatform == TargetPlatform.iOS ||
+    defaultTargetPlatform == TargetPlatform.macOS;
 
 class QrAttendanceSection extends StatelessWidget {
   const QrAttendanceSection({super.key});
@@ -51,6 +58,9 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
   final TextEditingController _apiUrlController = TextEditingController();
   final TextEditingController _apiKeyController = TextEditingController();
   final TextEditingController _deviceNameController = TextEditingController();
+  final TextEditingController _desktopScanController = TextEditingController();
+  final TextEditingController _desktopTransferController =
+      TextEditingController();
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   AppSettings _settings = AppSettings.empty();
@@ -87,6 +97,8 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
     _apiUrlController.dispose();
     _apiKeyController.dispose();
     _deviceNameController.dispose();
+    _desktopScanController.dispose();
+    _desktopTransferController.dispose();
     super.dispose();
   }
 
@@ -231,6 +243,20 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
     }
   }
 
+  Future<void> _submitDesktopScan(String rawPayload) async {
+    final raw = rawPayload.trim();
+    if (raw.isEmpty || _finished) return;
+    _desktopScanController.clear();
+    await _saveScan(raw);
+  }
+
+  Future<void> _submitDesktopTransfer(String rawPayload) async {
+    final raw = rawPayload.trim();
+    if (raw.isEmpty) return;
+    _desktopTransferController.clear();
+    await _importTransferQr(raw);
+  }
+
   Future<void> _handleTransferBarcode(BarcodeCapture capture) async {
     if (!_acceptingTransfer) return;
     final raw = capture.barcodes
@@ -270,7 +296,9 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
       );
     }
     await _reload();
-    await _transferScannerController.stop();
+    if (_cameraScannerSupported) {
+      await _transferScannerController.stop();
+    }
     if (!mounted) return;
     setState(() {
       _acceptingTransfer = false;
@@ -311,12 +339,16 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
       _transferStatus =
           'Accept mode: scan the transfer QR from the other mobile.';
     });
-    await _transferScannerController.start();
+    if (_cameraScannerSupported) {
+      await _transferScannerController.start();
+    }
   }
 
   Future<void> _stopAcceptTransfer() async {
     if (!_acceptingTransfer) return;
-    await _transferScannerController.stop();
+    if (_cameraScannerSupported) {
+      await _transferScannerController.stop();
+    }
     if (!mounted) return;
     setState(() {
       _acceptingTransfer = false;
@@ -341,7 +373,9 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
 
   Future<void> _finishAttendance() async {
     if (_finished) return;
-    await _scannerController.stop();
+    if (_cameraScannerSupported) {
+      await _scannerController.stop();
+    }
     if (!mounted) return;
     setState(() {
       _finished = true;
@@ -517,7 +551,10 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
         lastScan: _lastScan,
         syncing: _syncing,
         finished: _finished,
+        cameraSupported: _cameraScannerSupported,
+        desktopController: _desktopScanController,
         onDetect: _handleBarcode,
+        onDesktopSubmitted: _submitDesktopScan,
         onSync: () => _syncPending(),
         onFinish: _finishAttendance,
       ),
@@ -539,8 +576,11 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
         transferPayload: transferPayload,
         status: _transferStatus,
         accepting: _acceptingTransfer,
+        cameraSupported: _cameraScannerSupported,
+        desktopController: _desktopTransferController,
         scannerController: _transferScannerController,
         onDetect: _handleTransferBarcode,
+        onDesktopSubmitted: _submitDesktopTransfer,
         onDateChanged: _selectTransferDate,
         onShiftChanged: _selectTransferShift,
         onMarkSent: () => _markTransferSent(
@@ -579,19 +619,14 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
           decoration: const BoxDecoration(
             color: Colors.white,
-            border: Border(
-              bottom: BorderSide(color: Color(0xFFE6E9F4)),
-            ),
+            border: Border(bottom: BorderSide(color: Color(0xFFE6E9F4))),
           ),
           child: Row(
             children: [
               const Expanded(
                 child: Text(
                   'Exam Attendance',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
                 ),
               ),
               IconButton(
@@ -689,7 +724,10 @@ class _ScanTab extends StatelessWidget {
     required this.lastScan,
     required this.syncing,
     required this.finished,
+    required this.cameraSupported,
+    required this.desktopController,
     required this.onDetect,
+    required this.onDesktopSubmitted,
     required this.onSync,
     required this.onFinish,
   });
@@ -700,7 +738,10 @@ class _ScanTab extends StatelessWidget {
   final String? lastScan;
   final bool syncing;
   final bool finished;
+  final bool cameraSupported;
+  final TextEditingController desktopController;
   final void Function(BarcodeCapture capture) onDetect;
+  final ValueChanged<String> onDesktopSubmitted;
   final VoidCallback onSync;
   final VoidCallback onFinish;
 
@@ -711,59 +752,68 @@ class _ScanTab extends StatelessWidget {
       children: [
         _StatsGrid(stats: stats),
         const SizedBox(height: 14),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(22),
-          child: AspectRatio(
-            aspectRatio: 3 / 4,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (finished)
-                  const ColoredBox(color: Colors.black87)
-                else
-                  MobileScanner(
-                    controller: scannerController,
-                    onDetect: onDetect,
-                  ),
-                const _ScannerFrame(),
-                if (finished)
-                  const Center(
-                    child: Text(
-                      'Attendance Finished',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
+        if (cameraSupported)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(22),
+            child: AspectRatio(
+              aspectRatio: 3 / 4,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (finished)
+                    const ColoredBox(color: Colors.black87)
+                  else
+                    MobileScanner(
+                      controller: scannerController,
+                      onDetect: onDetect,
+                    ),
+                  const _ScannerFrame(),
+                  if (finished)
+                    const Center(
+                      child: Text(
+                        'Attendance Finished',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
-                  ),
-                Positioned(
-                  left: 14,
-                  right: 14,
-                  bottom: 14,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.60),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(
-                        lastScan == null
-                            ? 'Keep the QR code inside the camera frame.'
-                            : 'Last: $lastScan',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
+                  Positioned(
+                    left: 14,
+                    right: 14,
+                    bottom: 14,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.60),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          lastScan == null
+                              ? 'Keep the QR code inside the camera frame.'
+                              : 'Last: $lastScan',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+          )
+        else
+          _DesktopScannerInput(
+            controller: desktopController,
+            enabled: !finished,
+            label: 'Scan student attendance QR',
+            status: lastScan == null ? null : 'Last: $lastScan',
+            onSubmitted: onDesktopSubmitted,
           ),
-        ),
         const SizedBox(height: 14),
         _StatusCard(message: status, syncing: syncing, onSync: onSync),
         const SizedBox(height: 12),
@@ -791,6 +841,76 @@ class _ScannerFrame extends StatelessWidget {
             borderRadius: BorderRadius.circular(24),
             border: Border.all(color: Colors.white, width: 3),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopScannerInput extends StatelessWidget {
+  const _DesktopScannerInput({
+    required this.controller,
+    required this.enabled,
+    required this.label,
+    required this.onSubmitted,
+    this.status,
+  });
+
+  final TextEditingController controller;
+  final bool enabled;
+  final String label;
+  final String? status;
+  final ValueChanged<String> onSubmitted;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(Icons.qr_code_scanner_rounded, size: 72),
+            const SizedBox(height: 12),
+            Text(
+              'Desktop QR Scanner',
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Connect a USB QR scanner, click below, then scan. Most desktop scanners send Enter automatically.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: enabled,
+              enabled: enabled,
+              onSubmitted: onSubmitted,
+              decoration: InputDecoration(
+                labelText: label,
+                prefixIcon: const Icon(Icons.keyboard_alt_outlined),
+                suffixIcon: IconButton(
+                  tooltip: 'Submit scanned QR',
+                  onPressed: enabled
+                      ? () => onSubmitted(controller.text)
+                      : null,
+                  icon: const Icon(Icons.arrow_forward_rounded),
+                ),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            if (status != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                status!,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -872,8 +992,11 @@ class _TransferTab extends StatelessWidget {
     required this.transferPayload,
     required this.status,
     required this.accepting,
+    required this.cameraSupported,
+    required this.desktopController,
     required this.scannerController,
     required this.onDetect,
+    required this.onDesktopSubmitted,
     required this.onDateChanged,
     required this.onShiftChanged,
     required this.onMarkSent,
@@ -889,8 +1012,11 @@ class _TransferTab extends StatelessWidget {
   final String? transferPayload;
   final String status;
   final bool accepting;
+  final bool cameraSupported;
+  final TextEditingController desktopController;
   final MobileScannerController scannerController;
   final void Function(BarcodeCapture capture) onDetect;
+  final ValueChanged<String> onDesktopSubmitted;
   final ValueChanged<String?> onDateChanged;
   final ValueChanged<String?> onShiftChanged;
   final VoidCallback onMarkSent;
@@ -1015,7 +1141,7 @@ class _TransferTab extends StatelessWidget {
                   ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 12),
-                if (accepting)
+                if (accepting && cameraSupported)
                   ClipRRect(
                     borderRadius: BorderRadius.circular(18),
                     child: AspectRatio(
@@ -1031,6 +1157,13 @@ class _TransferTab extends StatelessWidget {
                         ],
                       ),
                     ),
+                  ),
+                if (accepting && !cameraSupported)
+                  _DesktopScannerInput(
+                    controller: desktopController,
+                    enabled: true,
+                    label: 'Scan attendance transfer QR',
+                    onSubmitted: onDesktopSubmitted,
                   ),
                 const SizedBox(height: 12),
                 FilledButton.icon(

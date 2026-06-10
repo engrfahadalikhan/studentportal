@@ -17,12 +17,17 @@ class PaperGeneratorScreen extends StatefulWidget {
     required this.teacher,
     required this.onAssessmentCreated,
     this.initialCourseId,
+    this.assessmentType = AssessmentType.examPaper,
   });
 
   final AppRepository repository;
   final AssessmentTeacher teacher;
   final ValueChanged<Assessment> onAssessmentCreated;
   final String? initialCourseId;
+
+  /// Which kind of paper this generator builds (quiz / assignment / exam).
+  /// Drives the saved type, default title, and instruction text.
+  final AssessmentType assessmentType;
 
   @override
   State<PaperGeneratorScreen> createState() => _PaperGeneratorScreenState();
@@ -347,7 +352,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
         _dateTimeController.text.trim(),
     ].where((part) => part.isNotEmpty).toList();
     final title = titleParts.isEmpty
-        ? 'Generated assessment'
+        ? 'Generated ${widget.assessmentType.label.toLowerCase()}'
         : titleParts.join(' • ');
 
     final extraClasses = _selectedCourses.length > 1
@@ -356,11 +361,11 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
 
     final assessment = widget.repository.createAssessment(
       title: title,
-      type: AssessmentType.examPaper,
+      type: widget.assessmentType,
       course: primaryCourse,
       durationMinutes: durationMinutes,
       instructions:
-          'Question interpretation is part of the exam. Using unfair means will result in paper cancellation. For each question, read the respective instructions very carefully.$extraClasses',
+          '${_defaultInstructions(widget.assessmentType)}$extraClasses',
       questions: assessmentQuestions,
       program: primaryCourse.program,
     );
@@ -374,6 +379,17 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
     });
 
     widget.onAssessmentCreated(assessment);
+  }
+
+  String _defaultInstructions(AssessmentType type) {
+    switch (type) {
+      case AssessmentType.quiz:
+        return 'Attempt every question within the time shown. The quiz auto-submits when the timer ends.';
+      case AssessmentType.assignment:
+        return 'Read each task carefully. Submit your answers / file before the due date.';
+      case AssessmentType.examPaper:
+        return 'Question interpretation is part of the exam. Using unfair means will result in paper cancellation. For each question, read the respective instructions very carefully.';
+    }
   }
 
   @override
@@ -446,7 +462,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
                     color: PortalColors.softBlue,
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.picture_as_pdf_rounded,
                     color: PortalColors.brandBlue,
                   ),
@@ -719,7 +735,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
                         : _generatedPdfIsDraft
                         ? 'Draft ready'
                         : 'Ready',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w700,
                       color: PortalColors.brandBlue,
                     ),
@@ -768,7 +784,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
             Container(
               width: 78,
               height: 78,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: LinearGradient(
                   colors: [PortalColors.brandBlue, PortalColors.avatarTeal],
@@ -822,7 +838,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
               Container(
                 width: 30,
                 height: 30,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: PortalColors.brandBlue,
                 ),
@@ -1111,7 +1127,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
         children: [
           Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.list_alt_outlined,
                 size: 18,
                 color: PortalColors.brandBlue,
@@ -1119,7 +1135,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
-                  'Possible answers (for MCQ-style)',
+                  'Possible answers — tap ○ to mark correct',
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
                     color: PortalColors.textPrimary,
@@ -1168,17 +1184,52 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
               optionIndex < question.optionControllers.length;
               optionIndex++
             ) ...[
-              TextFormField(
-                controller: question.optionControllers[optionIndex],
-                decoration: InputDecoration(
-                  labelText:
-                      'Answer ${_optionLetter(optionIndex)}',
-                  prefixIcon: const Icon(Icons.check_circle_outline),
-                ),
-                onChanged: (_) => setState(() => _generatedPdf = null),
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Mark as correct answer',
+                    onPressed: () {
+                      setState(() {
+                        question.correctOptionIndex =
+                            question.correctOptionIndex == optionIndex
+                            ? null
+                            : optionIndex;
+                        _generatedPdf = null;
+                      });
+                    },
+                    icon: Icon(
+                      question.correctOptionIndex == optionIndex
+                          ? Icons.check_circle_rounded
+                          : Icons.radio_button_unchecked,
+                      color: question.correctOptionIndex == optionIndex
+                          ? const Color(0xFF0F766E)
+                          : PortalColors.subtleText,
+                    ),
+                  ),
+                  Expanded(
+                    child: TextFormField(
+                      controller: question.optionControllers[optionIndex],
+                      decoration: InputDecoration(
+                        labelText: 'Answer ${_optionLetter(optionIndex)}',
+                      ),
+                      onChanged: (_) => setState(() => _generatedPdf = null),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
             ],
+            if (question.correctOptionIndex == null)
+              const Padding(
+                padding: EdgeInsets.only(top: 2, left: 4),
+                child: Text(
+                  'No correct answer marked → this question will need manual grading.',
+                  style: TextStyle(
+                    color: PortalColors.subtleText,
+                    fontSize: 11.5,
+                  ),
+                ),
+              ),
           ],
         ],
       ),
@@ -1451,6 +1502,10 @@ class _QuestionInputControllers {
   QuestionImagePlacement imagePlacement = QuestionImagePlacement.center;
   SubpartPlacement subpartPlacement = SubpartPlacement.indent;
 
+  /// Index of the option the teacher marked correct (for auto-graded quizzes).
+  /// Null = not set / not objective.
+  int? correctOptionIndex;
+
   int get timeMinutesValue =>
       int.tryParse(timeController.text.trim()) ?? 0;
 
@@ -1503,6 +1558,19 @@ class _QuestionInputControllers {
         : paperData.text;
     final options = paperData.options;
 
+    // Resolve the correct-answer text from the marked option, if any. This is
+    // what lets the quiz auto-grade on submit.
+    String? correctAnswer;
+    final markedIndex = correctOptionIndex;
+    if (markedIndex != null &&
+        markedIndex >= 0 &&
+        markedIndex < optionControllers.length) {
+      final marked = optionControllers[markedIndex].text.trim();
+      if (marked.isNotEmpty) {
+        correctAnswer = marked;
+      }
+    }
+
     return AssessmentQuestion(
       id: id,
       type: options.isNotEmpty
@@ -1511,6 +1579,7 @@ class _QuestionInputControllers {
       question: text.isEmpty ? 'Generated question' : text,
       marks: marksValue == 0 ? 1 : marksValue,
       options: options,
+      correctAnswer: correctAnswer,
       timeMinutes: paperData.timeMinutes,
     );
   }
@@ -1530,6 +1599,10 @@ class _QuestionInputControllers {
       controller.dispose();
     }
     optionControllers.removeRange(count, optionControllers.length);
+    // Clear the correct-answer marker if it now points past the list.
+    if (correctOptionIndex != null && correctOptionIndex! >= count) {
+      correctOptionIndex = null;
+    }
   }
 
   int get subpartMarksTotal {

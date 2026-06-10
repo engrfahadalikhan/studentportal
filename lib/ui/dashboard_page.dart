@@ -7,7 +7,9 @@ import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
 import '../theme/app_colors.dart';
+import '../theme/theme_picker.dart';
 import 'shared_widgets.dart';
+import 'student_portal_shell.dart';
 
 Future<void> _confirmLogout(BuildContext context, AppRepository repository) async {
   final shouldLogout = await showDialog<bool>(
@@ -60,6 +62,7 @@ class DashboardPage extends StatelessWidget {
               label: Text(session.isAdmin ? 'Admin' : 'Student'),
             ),
           ),
+          const AppearanceButton(),
           IconButton(
             tooltip: 'Logout',
             onPressed: () => _confirmLogout(context, repository),
@@ -175,7 +178,7 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                       child: _StatCard(
                         title: 'Students',
                         value:
-                            summary == null ? 'â€¦' : '${summary.studentCount}',
+                            summary == null ? '…' : '${summary.studentCount}',
                         subtitle: 'Unique rolls in DB',
                         color: AppColors.indigo600,
                         icon: Icons.groups_rounded,
@@ -186,7 +189,7 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                       child: _StatCard(
                         title: 'Enrollments',
                         value: summary == null
-                            ? 'â€¦'
+                            ? '…'
                             : '${summary.courseRegistrationCount}',
                         subtitle: 'Course rows',
                         color: AppColors.teal600,
@@ -335,7 +338,7 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Admin login is username admin and password 1234. Student login is roll number and password 1234.',
+                      'Admin login is username admin and password pdfpakistan. Student login is roll number and password 1234.',
                     ),
                   ],
                 ),
@@ -362,39 +365,48 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                     LayoutBuilder(
                       builder: (context, constraints) {
                         final wide = constraints.maxWidth >= 720;
-                        final fields = [
-                          Expanded(
-                            child: TextField(
-                              controller: _officerNameController,
-                              decoration: const InputDecoration(
-                                labelText: 'Name',
-                                prefixIcon: Icon(Icons.person_outline),
-                              ),
-                            ),
+                        final nameField = TextField(
+                          controller: _officerNameController,
+                          decoration: const InputDecoration(
+                            labelText: 'Name',
+                            prefixIcon: Icon(Icons.person_outline),
                           ),
-                          const SizedBox(width: 12, height: 12),
-                          Expanded(
-                            child: TextField(
-                              controller: _officerRollController,
-                              decoration: const InputDecoration(
-                                labelText: 'Roll no / ID',
-                                prefixIcon: Icon(Icons.badge_outlined),
-                              ),
-                            ),
+                        );
+                        final rollField = TextField(
+                          controller: _officerRollController,
+                          decoration: const InputDecoration(
+                            labelText: 'Roll no / ID',
+                            prefixIcon: Icon(Icons.badge_outlined),
                           ),
-                          const SizedBox(width: 12, height: 12),
-                          FilledButton.icon(
-                            onPressed: _grantAccess,
-                            icon: const Icon(Icons.add_moderator_outlined),
-                            label: const Text('Grant access'),
-                          ),
-                        ];
+                        );
+                        final grantButton = FilledButton.icon(
+                          onPressed: _grantAccess,
+                          icon: const Icon(Icons.add_moderator_outlined),
+                          label: const Text('Grant access'),
+                        );
+                        // Narrow (phone): stack vertically — NO Expanded inside
+                        // a Column in a scroll view (that throws an unbounded
+                        // height error and blanks the whole dashboard).
                         if (wide) {
-                          return Row(children: fields);
+                          return Row(
+                            children: [
+                              Expanded(child: nameField),
+                              const SizedBox(width: 12),
+                              Expanded(child: rollField),
+                              const SizedBox(width: 12),
+                              grantButton,
+                            ],
+                          );
                         }
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: fields,
+                          children: [
+                            nameField,
+                            const SizedBox(height: 12),
+                            rollField,
+                            const SizedBox(height: 12),
+                            grantButton,
+                          ],
                         );
                       },
                     ),
@@ -859,24 +871,15 @@ class _AdminHeroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            scheme.primary,
-            scheme.primary.withValues(alpha: 0.88),
-            scheme.secondary,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        gradient: PortalColors.heroGradient,
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: scheme.primary.withValues(alpha: 0.25),
+            color: Colors.black.withValues(alpha: 0.18),
             blurRadius: 24,
             offset: const Offset(0, 12),
           ),
@@ -916,7 +919,7 @@ class _AdminHeroCard extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      'AUST â€¢ Department of Computer Science',
+                      'AUST • Department of Computer Science',
                       style: TextStyle(
                         color: Color(0xFFEFF6FF),
                         fontWeight: FontWeight.w600,
@@ -934,7 +937,7 @@ class _AdminHeroCard extends StatelessWidget {
               Expanded(
                 child: _HeroStat(
                   label: 'Students',
-                  value: studentCount == null ? 'â€¦' : '$studentCount',
+                  value: studentCount == null ? '…' : '$studentCount',
                   icon: Icons.groups_rounded,
                 ),
               ),

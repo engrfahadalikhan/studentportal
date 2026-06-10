@@ -13,22 +13,31 @@ import '../modules/module_router.dart';
 import '../modules/modules_common.dart';
 import '../services/app_repository.dart';
 import '../theme/theme_controller.dart';
+import '../theme/theme_picker.dart';
 
-// Legacy color tokens — kept so existing widgets keep compiling. Values now
-// reference the new indigo + teal palette defined in `lib/theme/app_colors.dart`.
+// Brand color tokens. The brand colors are now *dynamic getters* that follow
+// the active theme palette (see ThemeController / AppPalette), so switching
+// themes recolors every widget that reads them. Neutrals stay constant.
 class PortalColors {
-  static const Color brandBlue = Color(0xFF4F46E5); // indigo-600
-  static const Color avatarBlue = Color(0xFF6366F1); // indigo-500
-  static const Color avatarTeal = Color(0xFF14B8A6); // teal-500
+  // ---- Brand (follow the active palette) ----
+  static Color get brandBlue => ThemeController.instance.palette.primary;
+  static Color get avatarBlue => ThemeController.instance.palette.primary;
+  static Color get avatarTeal => ThemeController.instance.palette.secondary;
+  static Color get blueBorder => ThemeController.instance.palette.border;
+  static Color get softBlue => ThemeController.instance.palette.soft;
+  static LinearGradient get heroGradient =>
+      ThemeController.instance.palette.heroGradient;
+  static LinearGradient get brandGradient =>
+      ThemeController.instance.palette.brandGradient;
+
+  // ---- Neutrals (palette-independent, keep the app readable) ----
   static const Color pageBackground = Color(0xFFF8FAFC); // slate-50
   static const Color textPrimary = Color(0xFF0F172A); // slate-900
   static const Color subtleText = Color(0xFF64748B); // slate-500
   static const Color navUnselected = Color(0xFF94A3B8); // slate-400
-  static const Color blueBorder = Color(0xFFE0E7FF); // indigo-100
   static const Color mintBorder = Color(0xFFCCFBF1); // teal-100
   static const Color purpleBorder = Color(0xFFEDE9FE); // violet-100
   static const Color cardBorder = Color(0xFFE2E8F0); // slate-200
-  static const Color softBlue = Color(0xFFEEF2FF); // indigo-50
   static const Color shadow = Color(0xFF0F172A); // slate-900 (use w/ low alpha)
 }
 
@@ -187,6 +196,7 @@ class _PortalTopBar extends StatelessWidget {
               ],
             ),
           ),
+          const AppearanceButton(),
           IconButton(
             tooltip: 'Notifications',
             onPressed: () {
@@ -303,8 +313,8 @@ class _PortalBottomNav extends StatelessWidget {
               behavior: HitTestBehavior.opaque,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
-                margin: const EdgeInsets.symmetric(horizontal: 2),
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
                 decoration: BoxDecoration(
                   color: selected
                       ? scheme.primaryContainer
@@ -324,18 +334,23 @@ class _PortalBottomNav extends StatelessWidget {
                       size: 24,
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      labels[index],
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: selected
-                            ? FontWeight.w800
-                            : FontWeight.w600,
-                        color: selected
-                            ? scheme.primary
-                            : (isDark
-                                ? scheme.onSurfaceVariant
-                                : PortalColors.navUnselected),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        labels[index],
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: selected
+                              ? FontWeight.w800
+                              : FontWeight.w600,
+                          color: selected
+                              ? scheme.primary
+                              : (isDark
+                                  ? scheme.onSurfaceVariant
+                                  : PortalColors.navUnselected),
+                        ),
                       ),
                     ),
                   ],
@@ -457,7 +472,7 @@ class _DashboardTab extends StatelessWidget {
                               ),
                         ),
                         const SizedBox(width: 2),
-                        const Icon(
+                        Icon(
                           Icons.chevron_right_rounded,
                           color: PortalColors.brandBlue,
                         ),
@@ -466,30 +481,35 @@ class _DashboardTab extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _QuickActionCard(
-                        icon: Icons.place_outlined,
-                        label: 'Seating Plan',
-                        onTap: onOpenExams,
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: _QuickActionCard(
+                          icon: Icons.event_seat_outlined,
+                          label: 'Seating Plan',
+                          onTap: onOpenExams,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _QuickActionCard(
-                        icon: Icons.calendar_month_outlined,
-                        label: 'Date Sheet',
-                        onTap: onOpenExams,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _QuickActionCard(
+                          icon: Icons.calendar_month_outlined,
+                          label: 'Date Sheet',
+                          onTap: onOpenExams,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _QuickActionCard(
-                  icon: Icons.assignment_outlined,
-                  label: 'Assessment QR',
-                  onTap: onOpenAssessments,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _QuickActionCard(
+                          icon: Icons.qr_code_2_rounded,
+                          label: 'Assessment QR',
+                          onTap: onOpenAssessments,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 12),
                 const Row(
@@ -655,7 +675,7 @@ class _CoursesTab extends StatelessWidget {
                       child: Text(
                         course.code,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: PortalColors.brandBlue,
                           fontWeight: FontWeight.w800,
                           fontSize: 11,
@@ -1047,8 +1067,6 @@ class _ProfileTab extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          const _AppearanceCard(),
-          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
@@ -1059,76 +1077,6 @@ class _ProfileTab extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _AppearanceCard extends StatelessWidget {
-  const _AppearanceCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: ThemeController.instance,
-      builder: (context, _) {
-        final current = ThemeController.instance.mode;
-        return _SectionCard(
-          borderColor: PortalColors.cardBorder,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    ThemeController.instance.icon,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Appearance',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Choose how the app looks. System default follows your phone setting.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: PortalColors.subtleText,
-                    ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final mode in ThemeMode.values)
-                    ChoiceChip(
-                      selected: current == mode,
-                      label: Text(
-                        switch (mode) {
-                          ThemeMode.system => 'System',
-                          ThemeMode.light => 'Light',
-                          ThemeMode.dark => 'Dark',
-                        },
-                      ),
-                      avatar: Icon(
-                        switch (mode) {
-                          ThemeMode.system => Icons.brightness_auto_outlined,
-                          ThemeMode.light => Icons.light_mode_outlined,
-                          ThemeMode.dark => Icons.dark_mode_outlined,
-                        },
-                        size: 18,
-                      ),
-                      onSelected: (_) =>
-                          ThemeController.instance.setMode(mode),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }
@@ -1146,13 +1094,13 @@ class _SectionCard extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: borderColor, width: 1.6),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: borderColor, width: 1.2),
         boxShadow: [
           BoxShadow(
-            color: PortalColors.shadow.withValues(alpha: 0.12),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
+            color: PortalColors.shadow.withValues(alpha: 0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -1171,7 +1119,7 @@ class _StudentAvatar extends StatelessWidget {
       height: 74,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           colors: [PortalColors.avatarBlue, PortalColors.avatarTeal],
         ),
         border: Border.all(color: const Color(0xFFEAF3FF), width: 3),
@@ -1229,29 +1177,46 @@ class _QuickActionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 18),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: PortalColors.cardBorder, width: 1.5),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: PortalColors.brandBlue, size: 24),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: PortalColors.textPrimary,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: PortalColors.cardBorder, width: 1.3),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: PortalColors.softBlue,
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                alignment: Alignment.center,
+                child: Icon(icon, color: PortalColors.brandBlue, size: 22),
               ),
-            ),
-          ],
+              const SizedBox(height: 10),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  height: 1.2,
+                  fontWeight: FontWeight.w700,
+                  color: PortalColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1267,13 +1232,11 @@ class _CaseStatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFEFFCF5), Color(0xFFE8FBF1)],
-        ),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFCFF4DE), width: 1.3),
+        border: Border.all(color: PortalColors.cardBorder, width: 1.3),
       ),
       child: Row(
         children: [
@@ -1283,17 +1246,35 @@ class _CaseStatusCard extends StatelessWidget {
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
-                color: PortalColors.subtleText,
+                color: PortalColors.textPrimary,
               ),
             ),
           ),
-          Text(
-            status,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFFF6FFF9),
-              shadows: [Shadow(color: Color(0x6650B98A), blurRadius: 10)],
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFFD1FAE5),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.check_circle_rounded,
+                  size: 14,
+                  color: Color(0xFF047857),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  status,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF047857),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -1389,7 +1370,7 @@ class _FypItem extends StatelessWidget {
           ),
           child: Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.info_outline_rounded,
                 color: PortalColors.avatarTeal,
                 size: 24,
@@ -1416,7 +1397,7 @@ class _FypItem extends StatelessWidget {
                   ],
                 ),
               ),
-              const Icon(
+              Icon(
                 Icons.chevron_right_rounded,
                 color: PortalColors.avatarTeal,
                 size: 26,

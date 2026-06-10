@@ -188,6 +188,7 @@ class _TierHeading extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = switch (tier) {
+      0 => 'Teacher dashboard — admin enables',
       1 => 'Tier 1 — Core academic',
       2 => 'Tier 2 — Common needs',
       3 => 'Tier 3 — Student life',

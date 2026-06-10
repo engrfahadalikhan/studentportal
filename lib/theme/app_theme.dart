@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_colors.dart';
+import 'app_palettes.dart';
 
 /// Builds the light + dark `ThemeData` for the portal. M3-first, designed to
 /// feel like a modern productivity app (Linear / Notion style) — soft shadows,
@@ -20,28 +21,32 @@ class AppTheme {
     borderRadius: BorderRadius.circular(999),
   );
 
-  static ThemeData light() => _build(_lightScheme(), Brightness.light);
-  static ThemeData dark() => _build(_darkScheme(), Brightness.dark);
+  static ThemeData light(AppPalette palette) =>
+      _build(_lightScheme(palette), Brightness.light);
+  static ThemeData dark(AppPalette palette) =>
+      _build(_darkScheme(palette), Brightness.dark);
 
   // ----- Color schemes ------------------------------------------------------
-  static ColorScheme _lightScheme() {
-    return const ColorScheme.light(
-      primary: AppColors.indigo600,
+  // Brand colors come from the active [AppPalette]; neutrals stay slate so the
+  // app reads well in every theme.
+  static ColorScheme _lightScheme(AppPalette p) {
+    return ColorScheme.light(
+      primary: p.primary,
       onPrimary: Colors.white,
-      primaryContainer: AppColors.indigo100,
-      onPrimaryContainer: AppColors.indigo950,
-      secondary: AppColors.teal600,
+      primaryContainer: p.border,
+      onPrimaryContainer: p.heroFrom,
+      secondary: p.secondary,
       onSecondary: Colors.white,
-      secondaryContainer: AppColors.teal100,
-      onSecondaryContainer: AppColors.teal900,
+      secondaryContainer: p.soft,
+      onSecondaryContainer: p.heroFrom,
       tertiary: AppColors.amber600,
       onTertiary: Colors.white,
-      tertiaryContainer: Color(0xFFFFF3D6),
+      tertiaryContainer: const Color(0xFFFFF3D6),
       onTertiaryContainer: AppColors.amber700,
       error: AppColors.danger600,
       onError: Colors.white,
-      errorContainer: Color(0xFFFEE2E2),
-      onErrorContainer: Color(0xFF7F1D1D),
+      errorContainer: const Color(0xFFFEE2E2),
+      onErrorContainer: const Color(0xFF7F1D1D),
       surface: Colors.white,
       onSurface: AppColors.slate900,
       surfaceContainerHighest: AppColors.slate100,
@@ -52,28 +57,30 @@ class AppTheme {
       scrim: AppColors.slate900,
       inverseSurface: AppColors.slate900,
       onInverseSurface: AppColors.slate50,
-      inversePrimary: AppColors.indigo300,
+      inversePrimary: p.primary,
     );
   }
 
-  static ColorScheme _darkScheme() {
-    return const ColorScheme.dark(
-      primary: AppColors.indigo400,
-      onPrimary: AppColors.indigo950,
-      primaryContainer: AppColors.indigo800,
-      onPrimaryContainer: AppColors.indigo100,
-      secondary: AppColors.teal400,
-      onSecondary: AppColors.teal900,
-      secondaryContainer: AppColors.teal800,
-      onSecondaryContainer: AppColors.teal100,
+  static ColorScheme _darkScheme(AppPalette p) {
+    final primary = Color.lerp(p.primary, Colors.white, 0.32)!;
+    final secondary = Color.lerp(p.secondary, Colors.white, 0.26)!;
+    return ColorScheme.dark(
+      primary: primary,
+      onPrimary: AppColors.slate950,
+      primaryContainer: p.heroTo,
+      onPrimaryContainer: p.border,
+      secondary: secondary,
+      onSecondary: AppColors.slate950,
+      secondaryContainer: Color.lerp(p.secondary, Colors.black, 0.45)!,
+      onSecondaryContainer: p.soft,
       tertiary: AppColors.amber400,
       onTertiary: AppColors.amber700,
-      tertiaryContainer: Color(0xFF78350F),
-      onTertiaryContainer: Color(0xFFFEF3C7),
-      error: Color(0xFFFCA5A5),
-      onError: Color(0xFF7F1D1D),
-      errorContainer: Color(0xFF7F1D1D),
-      onErrorContainer: Color(0xFFFEE2E2),
+      tertiaryContainer: const Color(0xFF78350F),
+      onTertiaryContainer: const Color(0xFFFEF3C7),
+      error: const Color(0xFFFCA5A5),
+      onError: const Color(0xFF7F1D1D),
+      errorContainer: const Color(0xFF7F1D1D),
+      onErrorContainer: const Color(0xFFFEE2E2),
       surface: AppColors.slate900,
       onSurface: AppColors.slate50,
       surfaceContainerHighest: AppColors.slate800,
@@ -84,7 +91,7 @@ class AppTheme {
       scrim: Colors.black,
       inverseSurface: AppColors.slate50,
       onInverseSurface: AppColors.slate900,
-      inversePrimary: AppColors.indigo700,
+      inversePrimary: p.primary,
     );
   }
 

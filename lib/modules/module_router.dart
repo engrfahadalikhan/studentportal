@@ -8,6 +8,7 @@ import '../fyp/fyp_teacher_section.dart';
 import '../internships/internships_section.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
+import '../ui/student_portal_shell.dart';
 import 'grades_module.dart';
 import 'modules_common.dart';
 import 'tier1_modules.dart';
@@ -244,6 +245,19 @@ class ModuleRouter {
                 'Mentor matchmaking with alumni',
               ],
             );
+      // These are admin gates for teacher dashboard areas, not openable
+      // module screens — they never reach the modules grid / router.
+      case FeatureKey.teacherModules:
+      case FeatureKey.teacherAssess:
+      case FeatureKey.teacherLive:
+      case FeatureKey.teacherResults:
+        return (_) => const ModuleComingSoonScreen(
+              title: 'Teacher area',
+              description:
+                  'This area is controlled from the teacher dashboard tabs.',
+              icon: Icons.dashboard_customize_outlined,
+              color: Color(0xFF4F46E5),
+            );
     }
   }
 
@@ -288,11 +302,7 @@ class _DigitalIdCardScreen extends StatelessWidget {
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(22),
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF12343B), Color(0xFF2948B7)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: PortalColors.heroGradient,
                 boxShadow: const [
                   BoxShadow(
                     color: Color(0x441F2A44),

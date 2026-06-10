@@ -316,7 +316,7 @@ class _TopAccentBand extends StatelessWidget {
       height: 160,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFF2948B7), Color(0xFF10B7C4)],
+          colors: [Color(0xFF4F46E5), Color(0xFF14B8A6)],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
@@ -338,7 +338,7 @@ class _BrandPanel extends StatelessWidget {
       padding: EdgeInsets.all(compact ? 24 : 34),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFF12343B), Color(0xFF2948B7), Color(0xFF10B7C4)],
+          colors: [Color(0xFF312E81), Color(0xFF4F46E5), Color(0xFF14B8A6)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -600,12 +600,12 @@ class _GradientActionButton extends StatelessWidget {
       width: double.infinity,
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF2948B7), Color(0xFF10B7C4)],
+          colors: [Color(0xFF4F46E5), Color(0xFF14B8A6)],
         ),
         borderRadius: BorderRadius.circular(18),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x332948B7),
+            color: Color(0x334F46E5),
             blurRadius: 18,
             offset: Offset(0, 10),
           ),
@@ -676,7 +676,7 @@ class _TeacherSetupHint extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.info_outline_rounded,
             color: PortalColors.brandBlue,
             size: 19,
@@ -707,7 +707,7 @@ class _CredentialHint extends StatelessWidget {
     final text = switch (role) {
       AppRole.faculty =>
         'Teacher can login without password for now. Select teacher name only.',
-      AppRole.admin => 'Admin demo: admin / 1234',
+      AppRole.admin => 'Admin login: admin / pdfpakistan',
       AppRole.student =>
         'Student password is 1234 with a valid roll number from the enrollment sheet.',
     };
@@ -722,7 +722,7 @@ class _CredentialHint extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.info_outline_rounded,
             color: PortalColors.brandBlue,
             size: 19,

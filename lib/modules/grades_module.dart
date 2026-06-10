@@ -288,9 +288,7 @@ class _OverallCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF2948B7), Color(0xFF10B7C4)],
-        ),
+        gradient: PortalColors.heroGradient,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Column(
