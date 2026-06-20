@@ -2,6 +2,7 @@
 
 import '../assessment/assessment_models.dart';
 import '../features/admin_feature_controls_page.dart';
+import '../features/answer_sheet_tracker_page.dart';
 import '../models/portal_session.dart';
 import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
@@ -1045,14 +1046,18 @@ class _QuickActionsRow extends StatelessWidget {
                 onTap: onOpenFeatureControls,
               ),
               _QuickActionData(
-                title: 'Manage Verifiers',
-                icon: Icons.verified_user_outlined,
+                title: 'Answer Sheets',
+                icon: Icons.assignment_returned_outlined,
                 color: AppColors.teal600,
-                onTap: () {},
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AnswerSheetTrackerPage(),
+                  ),
+                ),
               ),
               _QuickActionData(
-                title: 'Enrollment Sync',
-                icon: Icons.refresh_rounded,
+                title: 'Manage Verifiers',
+                icon: Icons.verified_user_outlined,
                 color: AppColors.amber600,
                 onTap: () {},
               ),

@@ -19,6 +19,7 @@ import 'assessment_models.dart';
 import 'assessment_qr_codec.dart';
 import 'paper_generator_screen.dart';
 import 'submission_qr_codec.dart';
+import 'live_hall_attendance_view.dart';
 import 'teacher_dashboard_models.dart';
 import 'teacher_dashboard_theme.dart';
 import 'teacher_dashboard_views.dart';
@@ -33,8 +34,13 @@ enum _TeacherSection {
   examAttendance,
   examScan,
   hallStats,
+  liveHallAttendance,
   takeExamAttendance,
+  hallShare,
+  acceptAttendance,
   attendanceSheets,
+  attendanceHistory,
+  exportRecord,
   shareAttendance,
   attendanceSharing,
   builder,
@@ -69,7 +75,7 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
   String? _selectedDbCourseId;
   String? _selectedDbAssessmentId;
   String? _selectedAttendanceSheetId;
-  ExamHallStats? _selectedHallStats;
+  ExamClassGroup? _selectedClass;
   String? _qrScanError;
   _TeacherSection _attendanceEditorBackSection = _TeacherSection.examAttendance;
 
@@ -276,10 +282,11 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
               data: snapshot.data!,
               onBack: () => _go(_TeacherSection.dashboard),
               onScan: _openExamScan,
-              onQrAttendance: () => _go(_TeacherSection.attendance),
               onViewAttendance: () => _go(_TeacherSection.attendanceSheets),
               onShareAttendance: () => _go(_TeacherSection.shareAttendance),
               onSharingStats: () => _go(_TeacherSection.attendanceSharing),
+              onHistory: () => _go(_TeacherSection.attendanceHistory),
+              onExport: () => _go(_TeacherSection.exportRecord),
             );
           },
         );
@@ -290,16 +297,98 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           errorMessage: _qrScanError,
         );
       case _TeacherSection.hallStats:
-        final stats = _selectedHallStats;
-        if (stats == null) {
+        final hallSheetId = _selectedAttendanceSheetId;
+        if (hallSheetId == null) {
           return _DatabaseMessage(
             message: _qrScanError ?? 'Hall data not found.',
           );
         }
-        return HallStatsView(
-          stats: stats,
+        return FutureBuilder<ExamAttendanceSheetDetail>(
+          future: _dashboardDatabase.loadAttendanceSheetDetail(hallSheetId),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _DatabaseMessage(message: snapshot.error.toString());
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final detail = snapshot.data!;
+            return HallStatsView(
+              stats: detail.stats,
+              students: detail.students,
+              onBack: () => _go(_TeacherSection.examAttendance),
+              onTakeAttendance: _openTakeAttendanceFromHall,
+              onLiveScan: _openLiveHallAttendance,
+              onSelectClass: _openClassAttendance,
+              onShare: () => _go(_TeacherSection.hallShare),
+              onAccept: () => _go(_TeacherSection.acceptAttendance),
+            );
+          },
+        );
+      case _TeacherSection.hallShare:
+        final shareSheetId = _selectedAttendanceSheetId;
+        if (shareSheetId == null) {
+          return const _DatabaseMessage(message: 'Hall data not found.');
+        }
+        return FutureBuilder<ExamHallStats>(
+          future: _dashboardDatabase.loadExamHallStats(shareSheetId),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _DatabaseMessage(message: snapshot.error.toString());
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            return HallShareView(
+              stats: snapshot.data!,
+              onBack: () => _go(_TeacherSection.hallStats),
+              onLoad: (classGroup) => _dashboardDatabase.loadAttendanceShare(
+                sheetId: shareSheetId,
+                classGroup: classGroup,
+              ),
+              onRecordShared: (classGroup) async {
+                await _dashboardDatabase.recordAttendanceShare(
+                  teacherId: widget.teacher.id,
+                  sheetId: shareSheetId,
+                  sharedWith: 'Admin',
+                  classGroup: classGroup,
+                );
+                _reloadTeacherHome();
+              },
+            );
+          },
+        );
+      case _TeacherSection.acceptAttendance:
+        return AcceptAttendanceView(
           onBack: () => _go(_TeacherSection.examAttendance),
-          onTakeAttendance: _openTakeAttendanceFromHall,
+          onAccept: (rawPayload) async {
+            final accepted = await _dashboardDatabase.acceptAttendanceQr(
+              teacherId: widget.teacher.id,
+              rawPayload: rawPayload,
+            );
+            _reloadTeacherHome();
+            return 'Accepted: ${accepted.courseName} — ${accepted.hallName}. '
+                'See it under Shared/Accepted Stats.';
+          },
+        );
+      case _TeacherSection.liveHallAttendance:
+        final liveSheetId = _selectedAttendanceSheetId;
+        if (liveSheetId == null) {
+          return const _DatabaseMessage(message: 'Hall data not found.');
+        }
+        final liveClass = _selectedClass;
+        return LiveHallAttendanceView(
+          // Key by sheet + class so switching class rebuilds camera + grid.
+          key: ValueKey('$liveSheetId|${liveClass?.program ?? 'all'}'),
+          sheetId: liveSheetId,
+          selectedClass: liveClass,
+          onBack: () => _go(_TeacherSection.hallStats),
+          onFinished: (_) {
+            setState(() {
+              _reloadTeacherHome();
+              _section = _TeacherSection.hallStats;
+            });
+          },
         );
       case _TeacherSection.takeExamAttendance:
         final sheetId = _selectedAttendanceSheetId;
@@ -338,6 +427,31 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
               onOpenSheet: _openAttendanceSheet,
             );
           },
+        );
+      case _TeacherSection.attendanceHistory:
+        return FutureBuilder<List<ExamAttendanceSheetSummary>>(
+          future: _dashboardDatabase.loadAttendanceSheets(widget.teacher.id),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _DatabaseMessage(message: snapshot.error.toString());
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            return AttendanceHistoryView(
+              sheets: snapshot.data!,
+              onBack: () => _go(_TeacherSection.examAttendance),
+              onOpenSheet: _openAttendanceHistorySheet,
+            );
+          },
+        );
+      case _TeacherSection.exportRecord:
+        return ExportRecordView(
+          onBack: () => _go(_TeacherSection.examAttendance),
+          buildJson: () => _dashboardDatabase.exportAttendanceJson(
+            teacherId: widget.teacher.id,
+            exportedBy: widget.teacher.name,
+          ),
         );
       case _TeacherSection.shareAttendance:
         return FutureBuilder<List<ExamAttendanceSheetSummary>>(
@@ -539,18 +653,28 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
         return;
       }
       setState(() {
-        _selectedHallStats = stats;
         _selectedAttendanceSheetId = stats.sheetId;
+        _selectedClass = null;
         _attendanceEditorBackSection = _TeacherSection.hallStats;
         _reloadTeacherHome();
+        // Land on the hall stats screen: it lists every class in the hall so
+        // the teacher can take attendance one class at a time.
         _section = _TeacherSection.hallStats;
       });
-    } on FormatException {
+    } on FormatException catch (error) {
       if (!mounted) {
         return;
       }
       setState(() {
-        _qrScanError = 'Invalid QR code.';
+        _qrScanError = error.message.isEmpty ? 'Invalid QR code.' : error.message;
+        _section = _TeacherSection.examScan;
+      });
+    } on StateError catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _qrScanError = error.message;
         _section = _TeacherSection.examScan;
       });
     } catch (_) {
@@ -571,11 +695,36 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
     });
   }
 
+  void _openLiveHallAttendance() {
+    setState(() {
+      _selectedClass = null;
+      _attendanceEditorBackSection = _TeacherSection.hallStats;
+      _section = _TeacherSection.liveHallAttendance;
+    });
+  }
+
+  void _openClassAttendance(ExamClassGroup group) {
+    setState(() {
+      _selectedClass = group;
+      _attendanceEditorBackSection = _TeacherSection.hallStats;
+      _section = _TeacherSection.liveHallAttendance;
+    });
+  }
+
   void _openAttendanceSheet(ExamAttendanceSheetSummary sheet) {
     setState(() {
       _selectedAttendanceSheetId = sheet.sheetId;
-      _selectedHallStats = null;
+      _selectedClass = null;
       _attendanceEditorBackSection = _TeacherSection.attendanceSheets;
+      _section = _TeacherSection.takeExamAttendance;
+    });
+  }
+
+  void _openAttendanceHistorySheet(ExamAttendanceSheetSummary sheet) {
+    setState(() {
+      _selectedAttendanceSheetId = sheet.sheetId;
+      _selectedClass = null;
+      _attendanceEditorBackSection = _TeacherSection.attendanceHistory;
       _section = _TeacherSection.takeExamAttendance;
     });
   }
@@ -591,16 +740,15 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
       sheetId: sheetId,
       statusesByStudentId: statusesByStudentId,
     );
-    final stats = await _dashboardDatabase.loadExamHallStats(sheetId);
     if (!mounted) {
       return;
     }
     setState(() {
-      _selectedHallStats = stats;
       _reloadTeacherHome();
       _section =
-          _attendanceEditorBackSection == _TeacherSection.attendanceSheets
-          ? _TeacherSection.attendanceSheets
+          (_attendanceEditorBackSection == _TeacherSection.attendanceSheets ||
+              _attendanceEditorBackSection == _TeacherSection.attendanceHistory)
+          ? _attendanceEditorBackSection
           : _TeacherSection.hallStats;
     });
   }
@@ -851,8 +999,13 @@ class _TeacherBottomNav extends StatelessWidget {
         return current == _TeacherSection.examAttendance ||
             current == _TeacherSection.examScan ||
             current == _TeacherSection.hallStats ||
+            current == _TeacherSection.liveHallAttendance ||
             current == _TeacherSection.takeExamAttendance ||
+            current == _TeacherSection.hallShare ||
+            current == _TeacherSection.acceptAttendance ||
             current == _TeacherSection.attendanceSheets ||
+            current == _TeacherSection.attendanceHistory ||
+            current == _TeacherSection.exportRecord ||
             current == _TeacherSection.shareAttendance ||
             current == _TeacherSection.attendanceSharing ||
             current == _TeacherSection.attendance;
@@ -867,8 +1020,13 @@ class _TeacherBottomNav extends StatelessWidget {
       case _TeacherSection.notifications:
       case _TeacherSection.examScan:
       case _TeacherSection.hallStats:
+      case _TeacherSection.liveHallAttendance:
       case _TeacherSection.takeExamAttendance:
+      case _TeacherSection.hallShare:
+      case _TeacherSection.acceptAttendance:
       case _TeacherSection.attendanceSheets:
+      case _TeacherSection.attendanceHistory:
+      case _TeacherSection.exportRecord:
       case _TeacherSection.shareAttendance:
       case _TeacherSection.attendanceSharing:
       case _TeacherSection.attendance:

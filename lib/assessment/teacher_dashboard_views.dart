@@ -1,6 +1,14 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../theme/theme_picker.dart';
 import '../ui/student_portal_shell.dart';
@@ -160,19 +168,21 @@ class ExamAttendanceHomeView extends StatelessWidget {
     required this.data,
     required this.onBack,
     required this.onScan,
-    required this.onQrAttendance,
     required this.onViewAttendance,
     required this.onShareAttendance,
     required this.onSharingStats,
+    required this.onHistory,
+    required this.onExport,
   });
 
   final ExamAttendanceDashboardData data;
   final VoidCallback onBack;
   final VoidCallback onScan;
-  final VoidCallback onQrAttendance;
   final VoidCallback onViewAttendance;
   final VoidCallback onShareAttendance;
   final VoidCallback onSharingStats;
+  final VoidCallback onHistory;
+  final VoidCallback onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -208,13 +218,13 @@ class ExamAttendanceHomeView extends StatelessWidget {
           children: [
             _MenuCard(
               icon: Icons.qr_code_scanner_rounded,
-              title: 'Scan QR Code',
+              title: 'Scan & Mark Attendance',
               onTap: onScan,
             ),
             _MenuCard(
-              icon: Icons.how_to_reg_rounded,
-              title: 'QR Attendance Scanner',
-              onTap: onQrAttendance,
+              icon: Icons.calendar_month_outlined,
+              title: 'Saved Stats (date-wise)',
+              onTap: onHistory,
             ),
             _MenuCard(
               icon: Icons.edit_calendar_outlined,
@@ -230,6 +240,11 @@ class ExamAttendanceHomeView extends StatelessWidget {
               icon: Icons.swap_horiz_outlined,
               title: 'Shared/Accepted Stats',
               onTap: onSharingStats,
+            ),
+            _MenuCard(
+              icon: Icons.upload_file_outlined,
+              title: 'Export for csexam',
+              onTap: onExport,
             ),
           ],
         ),
@@ -276,16 +291,61 @@ class _ExamQrScanViewState extends State<ExamQrScanView> {
         _BackButton(onPressed: widget.onBack),
         const SizedBox(height: 12),
         _SectionCard(
-          title: 'Scan QR Code',
+          title: 'Step 1 — Scan the Hall QR',
           child: Column(
             children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: PortalColors.softBlue,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'Scan the printed seating-plan HALL QR to open the hall. '
+                  'On the next screen the camera stays on and you scan each '
+                  "student's QR to mark them present — the rest are absent.",
+                  style: TextStyle(
+                    color: PortalColors.brandBlue,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
               ClipRRect(
                 borderRadius: BorderRadius.circular(18),
                 child: SizedBox(
                   height: 280,
-                  child: MobileScanner(
-                    controller: _controller,
-                    onDetect: _handleCapture,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      MobileScanner(
+                        controller: _controller,
+                        onDetect: _handleCapture,
+                      ),
+                      IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            width: 190,
+                            height: 190,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 3,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.25),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -294,15 +354,15 @@ class _ExamQrScanViewState extends State<ExamQrScanView> {
                 controller: _textController,
                 minLines: 1,
                 maxLines: 3,
-                decoration: const InputDecoration(labelText: 'QR code'),
+                decoration: const InputDecoration(labelText: 'Hall QR text'),
               ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: _submitText,
-                  icon: const Icon(Icons.search_outlined),
-                  label: const Text('Fetch Hall Stats'),
+                  icon: const Icon(Icons.meeting_room_outlined),
+                  label: const Text('Open Hall & Start Scanning'),
                 ),
               ),
               if (widget.errorMessage != null) ...[
@@ -339,20 +399,84 @@ class _ExamQrScanViewState extends State<ExamQrScanView> {
   }
 }
 
+/// One distinct colour per class/section sharing a hall. Kept in sync with the
+/// live skeleton's palette so a class shows the same colour on both screens.
+const List<Color> _hallClassPalette = [
+  Color(0xFF2563EB),
+  Color(0xFF7C3AED),
+  Color(0xFF0D9488),
+  Color(0xFFDB2777),
+  Color(0xFFEA580C),
+  Color(0xFF4F46E5),
+  Color(0xFF0EA5E9),
+  Color(0xFFCA8A04),
+];
+
+Color _hallClassColor(int index) =>
+    _hallClassPalette[index % _hallClassPalette.length];
+
+String _hallProgramCode(String value) {
+  final match = RegExp(r'^[A-Za-z]+').firstMatch(value.trim());
+  return (match?.group(0) ?? '').toUpperCase();
+}
+
 class HallStatsView extends StatelessWidget {
   const HallStatsView({
     super.key,
     required this.stats,
     required this.onBack,
     required this.onTakeAttendance,
+    this.students = const [],
+    this.onLiveScan,
+    this.onSelectClass,
+    this.onShare,
+    this.onAccept,
   });
 
   final ExamHallStats stats;
+  final List<ExamAttendanceStudent> students;
   final VoidCallback onBack;
   final VoidCallback onTakeAttendance;
+  final VoidCallback? onLiveScan;
+  final ValueChanged<ExamClassGroup>? onSelectClass;
+  final VoidCallback? onShare;
+  final VoidCallback? onAccept;
+
+  /// Present count per class (indexed like [stats.classGroups]): exact
+  /// class-group matches first, then by roll prefix + remaining capacity.
+  List<int> _presentPerClass() {
+    final groups = stats.classGroups;
+    final result = List<int>.filled(groups.length, 0);
+    final present = students
+        .where((s) => s.status == 'present')
+        .toList(growable: false);
+    final leftover = <ExamAttendanceStudent>[];
+    for (final student in present) {
+      final idx = student.classGroup.isEmpty
+          ? -1
+          : groups.indexWhere((g) => g.program == student.classGroup);
+      if (idx >= 0) {
+        result[idx]++;
+      } else {
+        leftover.add(student);
+      }
+    }
+    for (final student in leftover) {
+      final code = _hallProgramCode(student.rollNo);
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].code == code && result[i] < groups[i].count) {
+          result[i]++;
+          break;
+        }
+      }
+    }
+    return result;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final hasClasses = stats.classGroups.isNotEmpty && onSelectClass != null;
+    final presentPerClass = hasClasses ? _presentPerClass() : const <int>[];
     return _DashboardList(
       children: [
         _BackButton(onPressed: onBack),
@@ -389,13 +513,798 @@ class HallStatsView extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 16),
+        if (hasClasses) ...[
+          const Text(
+            'CLASSES IN THIS HALL',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.8,
+              color: PortalColors.subtleText,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Tap a class to scan its students one paper at a time.',
+            style: TextStyle(color: PortalColors.subtleText, fontSize: 12.5),
+          ),
+          const SizedBox(height: 10),
+          for (var i = 0; i < stats.classGroups.length; i++)
+            _ClassAttendanceCard(
+              color: _hallClassColor(i),
+              group: stats.classGroups[i],
+              present: i < presentPerClass.length ? presentPerClass[i] : 0,
+              onTap: () => onSelectClass!(stats.classGroups[i]),
+            ),
+          const SizedBox(height: 6),
+        ] else if (onLiveScan != null) ...[
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onLiveScan,
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: const Text('Live Scan Attendance'),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (onShare != null) ...[
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onShare,
+              icon: const Icon(Icons.ios_share_outlined),
+              label: const Text('Share attendance (QR / text)'),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (onAccept != null) ...[
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onAccept,
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: const Text('Accept attendance from another teacher'),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
         SizedBox(
           width: double.infinity,
-          child: FilledButton.icon(
+          child: OutlinedButton.icon(
             onPressed: onTakeAttendance,
             icon: const Icon(Icons.how_to_reg_outlined),
-            label: const Text('Take Attendance'),
+            label: const Text('Manual Attendance List'),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// One class card on the hall-stats screen: shows the class, its faculty and a
+/// done/total counter, colour-coded, tappable to take that class's attendance.
+class _ClassAttendanceCard extends StatelessWidget {
+  const _ClassAttendanceCard({
+    required this.color,
+    required this.group,
+    required this.present,
+    required this.onTap,
+  });
+
+  final Color color;
+  final ExamClassGroup group;
+  final int present;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = group.count;
+    final remaining = total - present > 0 ? total - present : 0;
+    final done = total > 0 && present >= total;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: color.withValues(alpha: 0.45)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(Icons.event_seat_outlined, color: color),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        group.program,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                          color: PortalColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        [
+                          if (group.subject.isNotEmpty) group.subject,
+                          if (group.faculty.isNotEmpty) group.faculty,
+                        ].join('  •  '),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: PortalColors.subtleText,
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        done
+                            ? 'All $total marked present'
+                            : 'Present $present / $total   •   $remaining remaining',
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: done
+                        ? const Color(0xFFD1FAE5)
+                        : color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        done
+                            ? Icons.check_circle_rounded
+                            : Icons.arrow_forward_rounded,
+                        size: 16,
+                        color: done ? const Color(0xFF047857) : color,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        done ? 'Done' : 'Scan',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                          color: done ? const Color(0xFF047857) : color,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Share an attendance sheet — whole hall OR one class (programwise) — as both
+/// a scannable QR and copyable text. The other teacher accepts it on their
+/// phone via [AcceptAttendanceView].
+class HallShareView extends StatefulWidget {
+  const HallShareView({
+    super.key,
+    required this.stats,
+    required this.onLoad,
+    required this.onRecordShared,
+    required this.onBack,
+  });
+
+  final ExamHallStats stats;
+  final Future<AttendanceShareData> Function(String classGroup) onLoad;
+  final Future<void> Function(String classGroup) onRecordShared;
+  final VoidCallback onBack;
+
+  @override
+  State<HallShareView> createState() => _HallShareViewState();
+}
+
+class _HallShareViewState extends State<HallShareView> {
+  String _scope = ''; // '' = whole hall, else a class program
+  AttendanceShareData? _data;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    setState(() => _loading = true);
+    final data = await widget.onLoad(_scope);
+    if (!mounted) return;
+    setState(() {
+      _data = data;
+      _loading = false;
+    });
+  }
+
+  void _selectScope(String scope) {
+    if (_scope == scope) return;
+    setState(() => _scope = scope);
+    _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final data = _data;
+    return _DashboardList(
+      children: [
+        _BackButton(onPressed: widget.onBack),
+        const SizedBox(height: 12),
+        _SectionCard(
+          title: 'Share attendance',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Choose what to share, then let the other teacher scan the QR '
+                '(or send the text). Same data, two ways.',
+                style: TextStyle(color: PortalColors.subtleText, fontSize: 12.5),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Whole hall'),
+                    selected: _scope.isEmpty,
+                    onSelected: (_) => _selectScope(''),
+                  ),
+                  for (final group in widget.stats.classGroups)
+                    ChoiceChip(
+                      label: Text(group.program),
+                      selected: _scope == group.program,
+                      onSelected: (_) => _selectScope(group.program),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (_loading || data == null)
+          const Padding(
+            padding: EdgeInsets.all(40),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else ...[
+          _SectionCard(
+            title: data.scopeLabel,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _ShareStat(label: 'Total', value: '${data.total}'),
+                    _ShareStat(
+                      label: 'Present',
+                      value: '${data.present}',
+                      color: const Color(0xFF047857),
+                    ),
+                    _ShareStat(
+                      label: 'Absent',
+                      value: '${data.absent}',
+                      color: const Color(0xFFB91C1C),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: PortalColors.cardBorder),
+                    ),
+                    child: QrImageView(
+                      data: data.qrPayload,
+                      version: QrVersions.auto,
+                      size: 240,
+                      gapless: false,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Center(
+                  child: Text(
+                    'Scan this on the other phone — Exam → Accept Attendance.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: PortalColors.subtleText,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () async {
+                          await Clipboard.setData(
+                            ClipboardData(text: data.text),
+                          );
+                          await widget.onRecordShared(_scope);
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Attendance text copied & logged.'),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.copy_rounded, size: 18),
+                        label: const Text('Copy text'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          await Clipboard.setData(
+                            ClipboardData(text: data.qrPayload),
+                          );
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('QR payload copied.'),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.qr_code_2_rounded, size: 18),
+                        label: const Text('Copy QR code'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _SectionCard(
+            title: 'Text summary',
+            child: SelectableText(
+              data.text,
+              style: const TextStyle(fontSize: 12.5, height: 1.4),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ShareStat extends StatelessWidget {
+  const _ShareStat({
+    required this.label,
+    required this.value,
+    this.color = PortalColors.textPrimary,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w900,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            color: PortalColors.subtleText,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Accept an attendance transfer from another teacher — scan their QR or paste
+/// the `CSEXAM|QATTN|1|…` text.
+class AcceptAttendanceView extends StatefulWidget {
+  const AcceptAttendanceView({
+    super.key,
+    required this.onAccept,
+    required this.onBack,
+  });
+
+  /// Decodes + stores the payload; returns a confirmation message or throws.
+  final Future<String> Function(String rawPayload) onAccept;
+  final VoidCallback onBack;
+
+  @override
+  State<AcceptAttendanceView> createState() => _AcceptAttendanceViewState();
+}
+
+class _AcceptAttendanceViewState extends State<AcceptAttendanceView> {
+  final _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode],
+  );
+  final _textController = TextEditingController();
+  bool _handled = false;
+  String? _message;
+  bool _ok = true;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _textController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _accept(String raw) async {
+    final payload = raw.trim();
+    if (payload.isEmpty) return;
+    try {
+      final summary = await widget.onAccept(payload);
+      if (!mounted) return;
+      setState(() {
+        _ok = true;
+        _message = summary;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _ok = false;
+        _message = error is FormatException ? error.message : error.toString();
+        _handled = false; // allow another scan after a failure
+      });
+    }
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    final raw = capture.barcodes
+        .map((b) => b.rawValue?.trim() ?? '')
+        .firstWhere((v) => v.isNotEmpty, orElse: () => '');
+    if (raw.isEmpty) return;
+    _handled = true;
+    _accept(raw);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _DashboardList(
+      children: [
+        _BackButton(onPressed: widget.onBack),
+        const SizedBox(height: 12),
+        _SectionCard(
+          title: 'Accept attendance',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Scan the share QR from the other phone, or paste the QR text '
+                'below.',
+                style: TextStyle(color: PortalColors.subtleText, fontSize: 12.5),
+              ),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: SizedBox(
+                  height: 260,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      MobileScanner(
+                        controller: _controller,
+                        onDetect: _onDetect,
+                      ),
+                      IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            width: 180,
+                            height: 180,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(color: Colors.white, width: 3),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _textController,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Paste attendance QR text',
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _accept(_textController.text),
+                icon: const Icon(Icons.download_done_rounded),
+                label: const Text('Accept pasted text'),
+              ),
+              if (_message != null) ...[
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _ok
+                        ? const Color(0xFFD1FAE5)
+                        : const Color(0xFFFEE2E2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _message!,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: _ok
+                          ? const Color(0xFF047857)
+                          : const Color(0xFFB91C1C),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Exports every hall's attendance (date + shift + hall + program) to one JSON
+/// file that the desktop csexam app imports for the master record.
+class ExportRecordView extends StatefulWidget {
+  const ExportRecordView({
+    super.key,
+    required this.buildJson,
+    required this.onBack,
+  });
+
+  final Future<String> Function() buildJson;
+  final VoidCallback onBack;
+
+  @override
+  State<ExportRecordView> createState() => _ExportRecordViewState();
+}
+
+class _ExportRecordViewState extends State<ExportRecordView> {
+  String? _json;
+  int _sessions = 0;
+  bool _loading = true;
+  String? _message;
+  bool _ok = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final json = await widget.buildJson();
+    var count = 0;
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is Map && decoded['sessionCount'] is int) {
+        count = decoded['sessionCount'] as int;
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _json = json;
+      _sessions = count;
+      _loading = false;
+    });
+  }
+
+  Future<void> _saveFile() async {
+    final json = _json;
+    if (json == null) return;
+    final bytes = Uint8List.fromList(utf8.encode(json));
+    final stamp = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+    try {
+      // Saved as .txt (not .json): WhatsApp and most chat apps reject/error on
+      // .json uploads but send .txt documents fine. csexam imports it anyway
+      // (it reads the content, not the extension).
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save attendance record for csexam',
+        fileName: 'aust_attendance_$stamp.txt',
+        bytes: bytes,
+      );
+      if (path == null) {
+        _flash('Save cancelled.', ok: false);
+        return;
+      }
+      // On desktop file_picker returns the path without writing — ensure the
+      // bytes land on disk. On mobile it already wrote them.
+      try {
+        final f = File(path);
+        if (!await f.exists() || (await f.length()) == 0) {
+          await f.writeAsBytes(bytes);
+        }
+      } catch (_) {}
+      _flash('Saved: $path', ok: true);
+    } catch (error) {
+      _flash('Could not save file: $error', ok: false);
+    }
+  }
+
+  /// The most reliable transfer: write a real file, then hand it to the OS
+  /// share sheet so WhatsApp/Drive/Email receive it directly (no manual
+  /// "attach document", which is what was erroring).
+  Future<void> _shareFile() async {
+    final json = _json;
+    if (json == null) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final stamp =
+          DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+      final file = File('${dir.path}/aust_attendance_$stamp.txt');
+      await file.writeAsString(json, flush: true);
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'text/plain')],
+        subject: 'AUST attendance record',
+        text: 'AUST attendance export — open in csexam → Import Attendance.',
+      );
+      _flash('Shared: ${file.path.split('/').last}', ok: true);
+    } catch (error) {
+      _flash('Could not share: $error', ok: false);
+    }
+  }
+
+  void _flash(String msg, {required bool ok}) {
+    if (!mounted) return;
+    setState(() {
+      _message = msg;
+      _ok = ok;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _DashboardList(
+      children: [
+        _BackButton(onPressed: widget.onBack),
+        const SizedBox(height: 12),
+        _HeroCard(
+          title: 'Export for csexam',
+          icon: Icons.upload_file_outlined,
+          children: [
+            _MetricTile(
+              icon: Icons.list_alt_outlined,
+              label: 'Sessions',
+              value: '$_sessions',
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _SectionCard(
+          title: 'Master record file',
+          child: _loading
+              ? const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'This saves ALL halls on this device — date-wise, '
+                      'shift-wise, hall-wise and program-wise — into one '
+                      '.txt file (WhatsApp-friendly). Send/move it to the PC '
+                      'and open it in csexam → Import Attendance for the '
+                      'official record.',
+                      style: TextStyle(
+                        color: PortalColors.subtleText,
+                        fontSize: 12.5,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    FilledButton.icon(
+                      onPressed: _sessions == 0 ? null : _shareFile,
+                      icon: const Icon(Icons.share_rounded),
+                      label: const Text('Share file (WhatsApp / Drive / Email)'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _sessions == 0 ? null : _saveFile,
+                      icon: const Icon(Icons.save_alt_rounded),
+                      label: const Text('Save as file (.txt)'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _json == null
+                          ? null
+                          : () async {
+                              await Clipboard.setData(
+                                ClipboardData(text: _json!),
+                              );
+                              _flash('JSON copied to clipboard.', ok: true);
+                            },
+                      icon: const Icon(Icons.copy_rounded),
+                      label: const Text('Copy JSON (backup)'),
+                    ),
+                    if (_sessions == 0) ...[
+                      const SizedBox(height: 10),
+                      const Text(
+                        'No attendance on this device yet.',
+                        style: TextStyle(color: PortalColors.subtleText),
+                      ),
+                    ],
+                    if (_message != null) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: _ok
+                              ? const Color(0xFFD1FAE5)
+                              : const Color(0xFFFEE2E2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: SelectableText(
+                          _message!,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                            color: _ok
+                                ? const Color(0xFF047857)
+                                : const Color(0xFFB91C1C),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
         ),
       ],
     );
@@ -467,6 +1376,14 @@ class _TakeExamAttendanceViewState extends State<TakeExamAttendanceView> {
         const SizedBox(height: 16),
         _SectionCard(
           title: 'Students',
+          action: TextButton.icon(
+            onPressed: widget.detail.students.isEmpty ? null : _confirmClearAll,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFB91C1C),
+            ),
+            icon: const Icon(Icons.clear_all_rounded, size: 18),
+            label: const Text('Clear all'),
+          ),
           child: widget.detail.students.isEmpty
               ? const _EmptyState('No students found.')
               : Column(
@@ -513,6 +1430,41 @@ class _TakeExamAttendanceViewState extends State<TakeExamAttendanceView> {
       }
     }
   }
+
+  Future<void> _confirmClearAll() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear all attendance?'),
+        content: const Text(
+          'Are you sure you want to clear everything? Every student in this '
+          'sheet will be reset to ABSENT. This cannot be undone after saving.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB91C1C),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    setState(() {
+      _statuses = {
+        for (final student in widget.detail.students)
+          student.studentId: 'absent',
+      };
+    });
+  }
 }
 
 class AttendanceSheetsView extends StatelessWidget {
@@ -552,7 +1504,166 @@ class AttendanceSheetsView extends StatelessWidget {
   }
 }
 
-class ShareAttendanceView extends StatelessWidget {
+/// All saved attendance sessions grouped by exam DATE (newest first). The data
+/// lives in the device's local sqflite DB, so it persists across app restarts.
+class AttendanceHistoryView extends StatelessWidget {
+  const AttendanceHistoryView({
+    super.key,
+    required this.sheets,
+    required this.onBack,
+    required this.onOpenSheet,
+  });
+
+  final List<ExamAttendanceSheetSummary> sheets;
+  final VoidCallback onBack;
+  final ValueChanged<ExamAttendanceSheetSummary> onOpenSheet;
+
+  @override
+  Widget build(BuildContext context) {
+    // Group by exam date.
+    final byDate = <DateTime, List<ExamAttendanceSheetSummary>>{};
+    for (final sheet in sheets) {
+      final d = DateTime(
+        sheet.examDateTime.year,
+        sheet.examDateTime.month,
+        sheet.examDateTime.day,
+      );
+      byDate.putIfAbsent(d, () => []).add(sheet);
+    }
+    final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
+
+    return _DashboardList(
+      children: [
+        _BackButton(onPressed: onBack),
+        const SizedBox(height: 12),
+        _HeroCard(
+          title: 'Saved Stats',
+          icon: Icons.calendar_month_outlined,
+          children: [
+            _MetricTile(
+              icon: Icons.event_note_outlined,
+              label: 'Days',
+              value: '${dates.length}',
+            ),
+            _MetricTile(
+              icon: Icons.list_alt_outlined,
+              label: 'Sessions',
+              value: '${sheets.length}',
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (sheets.isEmpty)
+          const _SectionCard(
+            title: 'Attendance history',
+            child: _EmptyState('No saved attendance yet.'),
+          )
+        else
+          for (final date in dates) ...[
+            Padding(
+              padding: const EdgeInsets.only(left: 4, top: 6, bottom: 8),
+              child: Text(
+                DateFormat('EEEE, dd MMM yyyy').format(date),
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
+                  color: PortalColors.textPrimary,
+                ),
+              ),
+            ),
+            for (final sheet in byDate[date]!)
+              _HistorySessionTile(sheet: sheet, onTap: () => onOpenSheet(sheet)),
+            const SizedBox(height: 8),
+          ],
+      ],
+    );
+  }
+}
+
+class _HistorySessionTile extends StatelessWidget {
+  const _HistorySessionTile({required this.sheet, required this.onTap});
+
+  final ExamAttendanceSheetSummary sheet;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: PortalColors.cardBorder),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: PortalColors.softBlue,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.meeting_room_outlined,
+                    color: PortalColors.brandBlue,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${sheet.hallName} • ${sheet.courseName}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: PortalColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          _miniStat('Present', sheet.presentCount,
+                              const Color(0xFF047857)),
+                          _miniStat('Absent', sheet.absentCount,
+                              const Color(0xFFB91C1C)),
+                          _miniStat('Total', sheet.totalStudents,
+                              PortalColors.subtleText),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right_rounded,
+                    color: PortalColors.subtleText),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _miniStat(String label, int value, Color color) {
+    return Text(
+      '$label $value',
+      style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: color),
+    );
+  }
+}
+
+class ShareAttendanceView extends StatefulWidget {
   const ShareAttendanceView({
     super.key,
     required this.sheets,
@@ -560,37 +1671,86 @@ class ShareAttendanceView extends StatelessWidget {
     required this.onShare,
   });
 
+  /// Sheets are ordered latest-first (by last update), so the first entry is
+  /// the default selection when transferring.
   final List<ExamAttendanceSheetSummary> sheets;
   final VoidCallback onBack;
   final ValueChanged<ExamAttendanceSheetSummary> onShare;
 
   @override
+  State<ShareAttendanceView> createState() => _ShareAttendanceViewState();
+}
+
+class _ShareAttendanceViewState extends State<ShareAttendanceView> {
+  String? _selectedSheetId;
+
+  ExamAttendanceSheetSummary? get _selectedSheet {
+    if (widget.sheets.isEmpty) {
+      return null;
+    }
+    return widget.sheets.firstWhere(
+      (sheet) => sheet.sheetId == _selectedSheetId,
+      orElse: () => widget.sheets.first,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final selected = _selectedSheet;
     return _DashboardList(
       children: [
-        _BackButton(onPressed: onBack),
+        _BackButton(onPressed: widget.onBack),
         const SizedBox(height: 12),
         _SectionCard(
           title: 'Share Attendance Stats',
-          child: sheets.isEmpty
+          child: widget.sheets.isEmpty
               ? const _EmptyState('No attendance found.')
               : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    for (final sheet in sheets)
-                      _AttendanceSheetTile(
-                        sheet: sheet,
-                        trailing: FilledButton.tonalIcon(
-                          onPressed: () => onShare(sheet),
-                          icon: const Icon(Icons.ios_share_outlined),
-                          label: const Text('Share'),
-                        ),
-                        onTap: () => onShare(sheet),
+                    DropdownButtonFormField<String>(
+                      initialValue: selected?.sheetId,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Attendance sheet (latest selected)',
+                        prefixIcon: Icon(Icons.fact_check_outlined),
                       ),
+                      items: [
+                        for (final sheet in widget.sheets)
+                          DropdownMenuItem(
+                            value: sheet.sheetId,
+                            child: Text(
+                              '${sheet.courseName} • ${sheet.hallName} • '
+                              '${_shortDate(sheet.examDateTime)}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _selectedSheetId = value),
+                    ),
+                    if (selected != null) ...[
+                      const SizedBox(height: 12),
+                      _AttendanceSheetTile(
+                        sheet: selected,
+                        onTap: () => widget.onShare(selected),
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: () => widget.onShare(selected),
+                        icon: const Icon(Icons.ios_share_outlined),
+                        label: const Text('Share / Transfer'),
+                      ),
+                    ],
                   ],
                 ),
         ),
       ],
     );
+  }
+
+  String _shortDate(DateTime value) {
+    return '${value.day}/${value.month}/${value.year}';
   }
 }
 
@@ -1167,15 +2327,10 @@ class _AttendanceStudentTile extends StatelessWidget {
 }
 
 class _AttendanceSheetTile extends StatelessWidget {
-  const _AttendanceSheetTile({
-    required this.sheet,
-    required this.onTap,
-    this.trailing,
-  });
+  const _AttendanceSheetTile({required this.sheet, required this.onTap});
 
   final ExamAttendanceSheetSummary sheet;
   final VoidCallback onTap;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -1184,16 +2339,14 @@ class _AttendanceSheetTile extends StatelessWidget {
       title: sheet.courseName,
       subtitle:
           '${sheet.hallName}  |  ${_dateTimeLabel(sheet.examDateTime)}  |  Updated ${_dateTimeLabel(sheet.lastUpdatedAt)}',
-      trailing:
-          trailing ??
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _SmallBadge('${sheet.presentCount} present'),
-              _SmallBadge('${sheet.absentCount} absent'),
-            ],
-          ),
+      trailing: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _SmallBadge('${sheet.presentCount} present'),
+          _SmallBadge('${sheet.absentCount} absent'),
+        ],
+      ),
       onTap: onTap,
     );
   }
@@ -1206,11 +2359,52 @@ class _SharedAttendanceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _PlainTile(
-      icon: Icons.ios_share_outlined,
-      title: sheet.courseName,
-      subtitle:
-          '${sheet.hallName}  |  ${_dateTimeLabel(sheet.examDateTime)}  |  ${sheet.sharedWith}  |  ${_dateTimeLabel(sheet.sharedAt)}  |  ${sheet.status}',
+    return GestureDetector(
+      onTap: sheet.payload.isEmpty ? null : () => _showDetails(context),
+      child: _PlainTile(
+        icon: Icons.ios_share_outlined,
+        title: sheet.courseName,
+        subtitle:
+            '${sheet.hallName}  |  ${_dateTimeLabel(sheet.examDateTime)}  |  ${sheet.sharedWith}  |  ${_dateTimeLabel(sheet.sharedAt)}  |  ${sheet.status}'
+            '${sheet.payload.isEmpty ? '' : '  |  Tap for details'}',
+      ),
+    );
+  }
+
+  /// Full shared record: present/absent rolls with seats + UFM cases.
+  void _showDetails(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${sheet.courseName} — shared details'),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              sheet.payload,
+              style: const TextStyle(fontSize: 13, height: 1.45),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: sheet.payload));
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('Details copied.')),
+                );
+              }
+            },
+            icon: const Icon(Icons.copy_rounded, size: 18),
+            label: const Text('Copy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 }

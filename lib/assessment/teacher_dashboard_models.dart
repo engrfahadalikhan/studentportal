@@ -209,6 +209,30 @@ class ExamAttendanceDashboardData {
   final int acceptedSheets;
 }
 
+/// One class/section sharing an exam hall (from the seating-plan HALL QR's
+/// `groups`). The live skeleton draws a colour-coded block of [count] seats
+/// per group so two classes in the same hall are visually distinct.
+class ExamClassGroup {
+  const ExamClassGroup({
+    required this.program,
+    required this.subject,
+    required this.faculty,
+    required this.count,
+  });
+
+  final String program;
+  final String subject;
+  final String faculty;
+  final int count;
+
+  /// The leading program code of the roll/program (e.g. "BSCS" from
+  /// "BSCS 2A"), used to colour a scanned student by their class.
+  String get code {
+    final match = RegExp(r'^[A-Za-z]+').firstMatch(program.trim());
+    return (match?.group(0) ?? program.trim()).toUpperCase();
+  }
+}
+
 class ExamHallStats {
   const ExamHallStats({
     required this.sheetId,
@@ -222,6 +246,7 @@ class ExamHallStats {
     required this.absentStudents,
     required this.status,
     required this.seatInfo,
+    this.classGroups = const [],
   });
 
   final String sheetId;
@@ -236,11 +261,37 @@ class ExamHallStats {
   final String status;
   final String seatInfo;
 
+  /// The classes/sections sharing this hall (for the colour-coded skeleton).
+  /// Empty for halls opened from a single seat token (no group breakdown).
+  final List<ExamClassGroup> classGroups;
+
   double get attendancePercentage {
     if (totalStudents == 0) {
       return 0;
     }
     return (presentStudents / totalStudents) * 100;
+  }
+
+  ExamHallStats copyWith({
+    int? totalStudents,
+    int? presentStudents,
+    int? absentStudents,
+    List<ExamClassGroup>? classGroups,
+  }) {
+    return ExamHallStats(
+      sheetId: sheetId,
+      hallId: hallId,
+      hallName: hallName,
+      courseId: courseId,
+      courseName: courseName,
+      examDateTime: examDateTime,
+      totalStudents: totalStudents ?? this.totalStudents,
+      presentStudents: presentStudents ?? this.presentStudents,
+      absentStudents: absentStudents ?? this.absentStudents,
+      status: status,
+      seatInfo: seatInfo,
+      classGroups: classGroups ?? this.classGroups,
+    );
   }
 }
 
@@ -250,6 +301,10 @@ class ExamAttendanceStudent {
     required this.studentName,
     required this.rollNo,
     required this.status,
+    this.seatLabel = '',
+    this.colNo = 0,
+    this.chairNo = 0,
+    this.classGroup = '',
   });
 
   final String studentId;
@@ -257,12 +312,29 @@ class ExamAttendanceStudent {
   final String rollNo;
   final String status;
 
+  /// Real seat from the seating plan (e.g. "Hall G10 | Col 4 | Chair 7").
+  /// Empty when the sheet was built from course enrollment instead of a
+  /// seating-plan QR.
+  final String seatLabel;
+  final int colNo;
+  final int chairNo;
+
+  /// The class/section this student was marked under (e.g. "BSCS 2A"), set when
+  /// attendance is taken one class at a time. Empty for whole-hall sheets.
+  final String classGroup;
+
+  bool get hasSeat => colNo > 0 && chairNo > 0;
+
   ExamAttendanceStudent copyWith({String? status}) {
     return ExamAttendanceStudent(
       studentId: studentId,
       studentName: studentName,
       rollNo: rollNo,
       status: status ?? this.status,
+      seatLabel: seatLabel,
+      colNo: colNo,
+      chairNo: chairNo,
+      classGroup: classGroup,
     );
   }
 }
@@ -308,6 +380,67 @@ class ExamAttendanceSheetDetail {
   final List<ExamAttendanceStudent> students;
 }
 
+/// A ready-to-share attendance summary for one scope (whole hall or a single
+/// class). Carries both the human-readable [text] and the scannable [qrPayload]
+/// (`CSEXAM|QATTN|1|...`) so it can be sent by text or by QR.
+class AttendanceShareData {
+  const AttendanceShareData({
+    required this.scopeLabel,
+    required this.classGroup,
+    required this.text,
+    required this.qrPayload,
+    required this.total,
+    required this.present,
+    required this.absent,
+  });
+
+  /// Human label of the scope, e.g. "Whole hall (SS1)" or "BSCS 2A".
+  final String scopeLabel;
+
+  /// The class program this share is limited to, or empty for the whole hall.
+  final String classGroup;
+
+  final String text;
+  final String qrPayload;
+  final int total;
+  final int present;
+  final int absent;
+}
+
+/// Allegation options offered when recording a UFM (Unfair Means) case.
+/// 'Other' asks for free-text details.
+const List<String> ufmAllegationOptions = [
+  'Mobile phone',
+  'Cheating material',
+  'Talking / signals',
+  'Impersonation',
+  'Other',
+];
+
+/// One recorded Unfair-Means case against a student in an exam sheet.
+/// Cases are entered one at a time from the live attendance screen.
+class UfmCase {
+  const UfmCase({
+    required this.id,
+    required this.sheetId,
+    required this.studentId,
+    required this.studentName,
+    required this.rollNo,
+    required this.allegation,
+    required this.details,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String sheetId;
+  final String studentId;
+  final String studentName;
+  final String rollNo;
+  final String allegation;
+  final String details;
+  final DateTime createdAt;
+}
+
 class SharedAttendanceSheetSummary {
   const SharedAttendanceSheetSummary({
     required this.id,
@@ -317,6 +450,7 @@ class SharedAttendanceSheetSummary {
     required this.sharedWith,
     required this.sharedAt,
     required this.status,
+    this.payload = '',
   });
 
   final String id;
@@ -326,6 +460,9 @@ class SharedAttendanceSheetSummary {
   final String sharedWith;
   final DateTime sharedAt;
   final String status;
+
+  /// Full shared text: present/absent rolls, seats and UFM cases.
+  final String payload;
 }
 
 class AcceptedAttendanceSheetSummary {

@@ -6,6 +6,10 @@ import '../services/app_repository.dart';
 import 'shared_widgets.dart';
 import 'student_portal_shell.dart';
 
+/// Shown on the login card so it's obvious which build is installed.
+/// Bump alongside `version:` in pubspec.yaml.
+const String kAppVersionLabel = 'v1.1.3';
+
 class AuthLandingPage extends StatefulWidget {
   const AuthLandingPage({super.key, required this.repository});
 
@@ -125,7 +129,7 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Abbottabad University of Science and Technology',
+                  'Abbottabad University of Science and Technology  •  $kAppVersionLabel',
                   style: theme.textTheme.bodyLarge?.copyWith(
                     color: PortalColors.subtleText,
                     height: 1.35,

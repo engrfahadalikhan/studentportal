@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../assessment/assessment_models.dart';
 import '../features/feature_catalog.dart';
@@ -364,10 +365,13 @@ class _DigitalIdCardScreen extends StatelessWidget {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(14),
                     ),
-                    child: const Icon(
-                      Icons.qr_code_2_rounded,
-                      size: 90,
-                      color: Color(0xFF12343B),
+                    // Real QR (roll number) — the teacher's live hall scanner
+                    // reads this to mark the student present.
+                    child: QrImageView(
+                      data: student.rollNo,
+                      version: QrVersions.auto,
+                      size: 120,
+                      backgroundColor: Colors.white,
                     ),
                   ),
                   const SizedBox(height: 6),
