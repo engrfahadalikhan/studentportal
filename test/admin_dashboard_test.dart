@@ -41,4 +41,30 @@ void main() {
     // The verification-access card (the one that used to crash) renders.
     expect(find.text('Grant access'), findsOneWidget);
   });
+
+  testWidgets('admin dashboard uses the desktop command-center shell', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 960));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final repository = AppRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(kAppPalettes.first),
+        home: DashboardPage(
+          repository: repository,
+          session: PortalSession.admin(),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('AUST Portal'), findsOneWidget);
+    expect(find.text('Academic control center'), findsOneWidget);
+    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('Themes'), findsWidgets);
+    expect(find.text('Student Portal'), findsNothing);
+  });
 }

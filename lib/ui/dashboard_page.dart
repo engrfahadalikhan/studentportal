@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../assessment/assessment_models.dart';
 import '../features/admin_feature_controls_page.dart';
@@ -8,11 +8,15 @@ import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
 import '../theme/app_colors.dart';
+import '../theme/theme_controller.dart';
 import '../theme/theme_picker.dart';
 import 'shared_widgets.dart';
 import 'student_portal_shell.dart';
 
-Future<void> _confirmLogout(BuildContext context, AppRepository repository) async {
+Future<void> _confirmLogout(
+  BuildContext context,
+  AppRepository repository,
+) async {
   final shouldLogout = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -47,39 +51,488 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Student Portal'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Chip(
-              avatar: Icon(
-                session.isAdmin
-                    ? Icons.admin_panel_settings_rounded
-                    : Icons.school_rounded,
-                size: 18,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (session.isAdmin && constraints.maxWidth >= 1050) {
+          return _AdminDesktopShell(repository: repository, session: session);
+        }
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('AUST Student Portal'),
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Chip(
+                  avatar: Icon(
+                    session.isAdmin
+                        ? Icons.admin_panel_settings_rounded
+                        : Icons.school_rounded,
+                    size: 18,
+                  ),
+                  label: Text(session.isAdmin ? 'Admin' : 'Student'),
+                ),
               ),
-              label: Text(session.isAdmin ? 'Admin' : 'Student'),
+              const AppearanceButton(),
+              IconButton(
+                tooltip: 'Logout',
+                onPressed: () => _confirmLogout(context, repository),
+                icon: const Icon(Icons.logout_rounded),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1100),
+                child: session.isAdmin
+                    ? _AdminDashboard(repository: repository)
+                    : _StudentDashboard(student: session.student!),
+              ),
             ),
           ),
-          const AppearanceButton(),
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: () => _confirmLogout(context, repository),
-            icon: const Icon(Icons.logout_rounded),
+        );
+      },
+    );
+  }
+}
+
+class _AdminDesktopShell extends StatefulWidget {
+  const _AdminDesktopShell({required this.repository, required this.session});
+
+  final AppRepository repository;
+  final PortalSession session;
+
+  @override
+  State<_AdminDesktopShell> createState() => _AdminDesktopShellState();
+}
+
+class _AdminDesktopShellState extends State<_AdminDesktopShell> {
+  final ScrollController _scrollController = ScrollController();
+  int _selectedSection = 0;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollTo(int section, double offset) {
+    setState(() => _selectedSection = section);
+    _scrollController.animateTo(
+      offset,
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final background = isDark
+        ? Theme.of(context).colorScheme.surface
+        : const Color(0xFFEAF5FF);
+
+    return Scaffold(
+      backgroundColor: background,
+      body: Row(
+        children: [
+          SizedBox(
+            width: 286,
+            child: _AdminSidebar(
+              username: widget.session.username,
+              selectedIndex: _selectedSection,
+              onDashboard: () => _scrollTo(0, 0),
+              onAssessments: () => _scrollTo(1, 620),
+              onVerification: () => _scrollTo(2, 1350),
+              onFeatureControls: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const AdminFeatureControlsPage(),
+                ),
+              ),
+              onAnswerSheets: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const AnswerSheetTrackerPage(),
+                ),
+              ),
+              onAppearance: () => showAppearanceSheet(context),
+              onLogout: () => _confirmLogout(context, widget.repository),
+            ),
           ),
-          const SizedBox(width: 8),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned(
+                  top: -170,
+                  right: -110,
+                  child: _AmbientCircle(
+                    size: 420,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.06),
+                  ),
+                ),
+                Positioned(
+                  bottom: -220,
+                  left: 120,
+                  child: _AmbientCircle(
+                    size: 520,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.secondary.withValues(alpha: 0.05),
+                  ),
+                ),
+                SafeArea(
+                  child: SingleChildScrollView(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(40, 34, 40, 48),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1480),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Dashboard',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .displayMedium
+                                            ?.copyWith(
+                                              fontSize: 36,
+                                              fontWeight: FontWeight.w800,
+                                              letterSpacing: -0.8,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Welcome to your student portal command center.',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.onSurfaceVariant,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 20),
+                                const _DesktopThemePill(),
+                              ],
+                            ),
+                            const SizedBox(height: 34),
+                            _AdminDashboard(
+                              repository: widget.repository,
+                              desktop: true,
+                              showHero: false,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1100),
-            child: session.isAdmin
-                ? _AdminDashboard(repository: repository)
-                : _StudentDashboard(student: session.student!),
+    );
+  }
+}
+
+class _AmbientCircle extends StatelessWidget {
+  const _AmbientCircle({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+    );
+  }
+}
+
+class _DesktopThemePill extends StatelessWidget {
+  const _DesktopThemePill();
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: ThemeController.instance,
+      builder: (context, _) {
+        final controller = ThemeController.instance;
+        return Material(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(18),
+          elevation: 0,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: () => showAppearanceSheet(context),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: Theme.of(context).dividerColor),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.palette_rounded,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Themes',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    controller.palette.label,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AdminSidebar extends StatelessWidget {
+  const _AdminSidebar({
+    required this.username,
+    required this.selectedIndex,
+    required this.onDashboard,
+    required this.onAssessments,
+    required this.onVerification,
+    required this.onFeatureControls,
+    required this.onAnswerSheets,
+    required this.onAppearance,
+    required this.onLogout,
+  });
+
+  final String username;
+  final int selectedIndex;
+  final VoidCallback onDashboard;
+  final VoidCallback onAssessments;
+  final VoidCallback onVerification;
+  final VoidCallback onFeatureControls;
+  final VoidCallback onAnswerSheets;
+  final VoidCallback onAppearance;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      ('Dashboard', Icons.dashboard_rounded, onDashboard, 0),
+      ('Assessments', Icons.assignment_rounded, onAssessments, 1),
+      ('Verification Access', Icons.verified_user_rounded, onVerification, 2),
+      ('Feature Controls', Icons.tune_rounded, onFeatureControls, -1),
+      ('Answer Sheets', Icons.assignment_returned_rounded, onAnswerSheets, -1),
+      ('Themes', Icons.palette_rounded, onAppearance, -1),
+    ];
+
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF173F68), Color(0xFF2E6FA4)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 24, 12, 18),
+          child: Column(
+            children: [
+              Container(
+                width: 82,
+                height: 82,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.24),
+                  ),
+                ),
+                child: ClipOval(
+                  child: Image.asset('assets/cs_logo.jpeg', fit: BoxFit.cover),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'AUST Portal',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Academic control center',
+                style: TextStyle(
+                  color: Color(0xFFCCE5FA),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: items.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 6),
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    final selected = item.$4 == selectedIndex;
+                    return _SidebarItem(
+                      label: item.$1,
+                      icon: item.$2,
+                      selected: selected,
+                      onTap: item.$3,
+                    );
+                  },
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.18),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const CircleAvatar(
+                      radius: 22,
+                      backgroundColor: Color(0xFF67D5EE),
+                      child: Icon(Icons.person_rounded, color: Colors.white),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            username,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const Text(
+                            'Administrator',
+                            style: TextStyle(
+                              color: Color(0xFFCCE5FA),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Logout',
+                      onPressed: onLogout,
+                      icon: const Icon(Icons.logout_rounded),
+                      color: Colors.white,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarItem extends StatelessWidget {
+  const _SidebarItem({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? Colors.white.withValues(alpha: 0.20)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(15),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(15),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            border: selected
+                ? Border.all(color: Colors.white.withValues(alpha: 0.28))
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: Colors.white, size: 21),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -88,9 +541,15 @@ class DashboardPage extends StatelessWidget {
 }
 
 class _AdminDashboard extends StatefulWidget {
-  const _AdminDashboard({required this.repository});
+  const _AdminDashboard({
+    required this.repository,
+    this.desktop = false,
+    this.showHero = true,
+  });
 
   final AppRepository repository;
+  final bool desktop;
+  final bool showHero;
 
   @override
   State<_AdminDashboard> createState() => _AdminDashboardState();
@@ -135,28 +594,30 @@ class _AdminDashboardState extends State<_AdminDashboard> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _AdminHeroCard(
-              studentCount: summary?.studentCount,
-              enrollmentCount: summary?.courseRegistrationCount,
-              teacherCount: teachers.length,
-              activeAssessments: activeAssessments.length,
-            ),
-            const SizedBox(height: 18),
-            _QuickActionsRow(
-              onOpenFeatureControls: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const AdminFeatureControlsPage(),
+            if (widget.showHero) ...[
+              _AdminHeroCard(
+                studentCount: summary?.studentCount,
+                enrollmentCount: summary?.courseRegistrationCount,
+                teacherCount: teachers.length,
+                activeAssessments: activeAssessments.length,
+              ),
+              const SizedBox(height: 18),
+              _QuickActionsRow(
+                onOpenFeatureControls: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AdminFeatureControlsPage(),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 22),
+              const SizedBox(height: 22),
+            ],
             Text(
               'OVERVIEW',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w800,
-                  ),
+                color: scheme.onSurfaceVariant,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 10),
             LayoutBuilder(
@@ -164,12 +625,12 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                 final crossCount = constraints.maxWidth > 900
                     ? 4
                     : constraints.maxWidth > 600
-                        ? 3
-                        : 2;
+                    ? 3
+                    : 2;
                 final spacing = 12.0;
                 final tileWidth =
                     (constraints.maxWidth - spacing * (crossCount - 1)) /
-                        crossCount;
+                    crossCount;
                 return Wrap(
                   spacing: spacing,
                   runSpacing: spacing,
@@ -178,8 +639,9 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                       width: tileWidth,
                       child: _StatCard(
                         title: 'Students',
-                        value:
-                            summary == null ? '…' : '${summary.studentCount}',
+                        value: summary == null
+                            ? '…'
+                            : '${summary.studentCount}',
                         subtitle: 'Unique rolls in DB',
                         color: AppColors.indigo600,
                         icon: Icons.groups_rounded,
@@ -251,6 +713,16 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                 );
               },
             ),
+            if (widget.desktop) ...[
+              const SizedBox(height: 24),
+              _QuickActionsRow(
+                onOpenFeatureControls: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AdminFeatureControlsPage(),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             Card(
               child: Padding(
@@ -643,9 +1115,9 @@ class _StudentDashboard extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   student.rollNo,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
                 ),
               ],
             ),
@@ -752,7 +1224,6 @@ class _StudentDashboard extends StatelessWidget {
   }
 }
 
-
 class _InfoBlock extends StatelessWidget {
   const _InfoBlock({required this.label, required this.value});
 
@@ -776,9 +1247,9 @@ class _InfoBlock extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             value.isEmpty ? '-' : value,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
           ),
         ],
       ),
@@ -803,52 +1274,72 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return Container(
+      constraints: const BoxConstraints(minHeight: 158),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Theme.of(context).dividerColor),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF16456E).withValues(alpha: 0.07),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(13),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
                   ),
-                  child: Icon(icon, color: color),
                 ),
-                const Spacer(),
+                const SizedBox(height: 12),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                    fontSize: 34,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.8,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              value,
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
+          ),
+          const SizedBox(width: 12),
+          Container(
+            width: 58,
+            height: 58,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [color.withValues(alpha: 0.72), color],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(18),
             ),
-            const SizedBox(height: 2),
-            Text(
-              title,
-              style: Theme.of(context)
-                  .textTheme
-                  .titleSmall
-                  ?.copyWith(fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
+            child: Icon(icon, color: Colors.white, size: 27),
+          ),
+        ],
       ),
     );
   }
@@ -1025,10 +1516,10 @@ class _QuickActionsRow extends StatelessWidget {
         Text(
           'QUICK ACTIONS',
           style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-                letterSpacing: 1.2,
-                fontWeight: FontWeight.w800,
-              ),
+            color: scheme.onSurfaceVariant,
+            letterSpacing: 1.2,
+            fontWeight: FontWeight.w800,
+          ),
         ),
         const SizedBox(height: 10),
         LayoutBuilder(
@@ -1037,7 +1528,7 @@ class _QuickActionsRow extends StatelessWidget {
             const spacing = 10.0;
             final tileWidth =
                 (constraints.maxWidth - spacing * (crossCount - 1)) /
-                    crossCount;
+                crossCount;
             final tiles = <_QuickActionData>[
               _QuickActionData(
                 title: 'Feature Controls',
