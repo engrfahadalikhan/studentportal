@@ -66,6 +66,7 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
     return AnimatedBuilder(
       animation: _repo,
       builder: (context, _) {
+        final isCoordinator = _repo.isCoordinator(widget.teacher.name);
         return Scaffold(
           backgroundColor: PortalColors.pageBackground,
           appBar: AppBar(
@@ -90,10 +91,17 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
           body: TabBarView(
             controller: _tabController,
             children: [
-              FypTeacherGroupsTab(
-                teacherName: widget.teacher.name,
-                teacherNames: _allTeacherNames(),
-              ),
+              isCoordinator
+                  ? FypAdminGroupsPage(
+                      title: 'FYP Groups (coordinator)',
+                      actorName: widget.teacher.name,
+                      allowCoordinatorAppointment: false,
+                      embedInParent: true,
+                    )
+                  : FypTeacherGroupsTab(
+                      teacherName: widget.teacher.name,
+                      teacherNames: _allTeacherNames(),
+                    ),
               _MyIdeasTab(teacher: widget.teacher, repo: _repo),
               _AllocationsReviewTab(teacher: widget.teacher, repo: _repo),
               _MeetingLogsReviewTab(teacher: widget.teacher, repo: _repo),
@@ -184,23 +192,25 @@ class _IdeaCard extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
-          _StatusChip(
-            label: idea.takenByGroupId.isEmpty ? 'Open' : 'Claimed',
-          ),
+          _StatusChip(label: idea.takenByGroupId.isEmpty ? 'Open' : 'Claimed'),
         ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Domain: ${idea.projectDomain}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Domain: ${idea.projectDomain}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           Text(
             idea.description,
             style: const TextStyle(fontSize: 12.5, height: 1.4),
           ),
           if (idea.tools.isNotEmpty)
-            Text('Tools: ${idea.tools}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Tools: ${idea.tools}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
         ],
       ),
       actions: [
@@ -218,10 +228,7 @@ class _IdeaCard extends StatelessWidget {
         OutlinedButton.icon(
           onPressed: () async {
             final bytes = await buildFypIdeaPdf(idea);
-            await Printing.sharePdf(
-              bytes: bytes,
-              filename: '${idea.id}.pdf',
-            );
+            await Printing.sharePdf(bytes: bytes, filename: '${idea.id}.pdf');
           },
           icon: const Icon(Icons.share_rounded),
           label: const Text('Share'),
@@ -321,9 +328,7 @@ class _IdeaFormPageState extends State<_IdeaFormPage> {
                     controller: _description,
                     minLines: 3,
                     maxLines: 6,
-                    decoration: const InputDecoration(
-                      labelText: 'Description',
-                    ),
+                    decoration: const InputDecoration(labelText: 'Description'),
                     validator: _required,
                   ),
                   const SizedBox(height: 10),
@@ -486,8 +491,13 @@ class _AllocationReviewCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-              'Role: ${_imSupervisor ? 'Main Supervisor' : _imCoSupervisor ? 'Co-Supervisor' : '—'}',
-              style: const TextStyle(fontSize: 12.5)),
+            'Role: ${_imSupervisor
+                ? 'Main Supervisor'
+                : _imCoSupervisor
+                ? 'Co-Supervisor'
+                : '—'}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           const SizedBox(height: 4),
           Text(
             'Members: ${allocation.members.map((m) => '${m.rollNo} ${m.name}').join(', ')}',
@@ -495,8 +505,10 @@ class _AllocationReviewCard extends StatelessWidget {
           ),
           if (allocation.expectedOutcome.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Expected outcome: ${allocation.expectedOutcome}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Expected outcome: ${allocation.expectedOutcome}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
         ],
       ),
@@ -584,29 +596,37 @@ class _MeetingLogReviewCard extends StatelessWidget {
             ),
           ),
           _StatusChip(
-              label: log.isSupervisorFilled ? 'Closed' : 'Section 2 pending'),
+            label: log.isSupervisorFilled ? 'Closed' : 'Section 2 pending',
+          ),
         ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-              'Members: ${log.members.map((m) => '${m.rollNo} ${m.name}').join(', ')}',
-              style: const TextStyle(fontSize: 12.5)),
+            'Members: ${log.members.map((m) => '${m.rollNo} ${m.name}').join(', ')}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           if (log.workDoneSinceLastMeeting.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Work done: ${log.workDoneSinceLastMeeting}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Work done: ${log.workDoneSinceLastMeeting}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
           if (log.issuesToDiscuss.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Issues / tasks: ${log.issuesToDiscuss}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Issues / tasks: ${log.issuesToDiscuss}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
           if (log.tasksAssigned.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Tasks assigned: ${log.tasksAssigned}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Tasks assigned: ${log.tasksAssigned}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
         ],
       ),
@@ -638,8 +658,7 @@ class _MeetingLogReviewCard extends StatelessWidget {
     FypRepository repo,
   ) async {
     final tasksController = TextEditingController(text: log.tasksAssigned);
-    final nextController =
-        TextEditingController(text: log.nextMeetingDate);
+    final nextController = TextEditingController(text: log.nextMeetingDate);
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -656,9 +675,8 @@ class _MeetingLogReviewCard extends StatelessWidget {
                 children: [
                   Text(
                     'Section 2 — Supervisor',
-                    style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                    style: Theme.of(sheetContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 12),
                   TextField(
@@ -689,8 +707,7 @@ class _MeetingLogReviewCard extends StatelessWidget {
                       const SizedBox(width: 10),
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () =>
-                              Navigator.of(sheetContext).pop(true),
+                          onPressed: () => Navigator.of(sheetContext).pop(true),
                           icon: const Icon(Icons.check_rounded),
                           label: const Text('Save'),
                         ),
@@ -744,8 +761,7 @@ class _EvaluationsEntryTab extends StatelessWidget {
           runSpacing: 10,
           children: [
             FilledButton.icon(
-              onPressed: () =>
-                  _openForm(context, FypEvaluationKind.proposal),
+              onPressed: () => _openForm(context, FypEvaluationKind.proposal),
               icon: const Icon(Icons.note_add_outlined),
               label: const Text('New Proposal Evaluation'),
             ),
@@ -770,17 +786,11 @@ class _EvaluationsEntryTab extends StatelessWidget {
     );
   }
 
-  Future<void> _openForm(
-    BuildContext context,
-    FypEvaluationKind kind,
-  ) async {
+  Future<void> _openForm(BuildContext context, FypEvaluationKind kind) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => _EvaluationFormPage(
-          kind: kind,
-          teacher: teacher,
-          repo: repo,
-        ),
+        builder: (_) =>
+            _EvaluationFormPage(kind: kind, teacher: teacher, repo: repo),
       ),
     );
   }
@@ -810,14 +820,17 @@ class _EvaluationCard extends StatelessWidget {
             ),
           ),
           _StatusChip(
-              label: '${evaluation.marksObtained}/${evaluation.marksMax}'),
+            label: '${evaluation.marksObtained}/${evaluation.marksMax}',
+          ),
         ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Supervisor: ${evaluation.supervisorName}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Supervisor: ${evaluation.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           Text(
             'Submitted: ${DateFormat('dd MMM yyyy').format(evaluation.submittedAt)}',
             style: const TextStyle(fontSize: 12.5),
@@ -1132,7 +1145,8 @@ class _ConsentCard extends StatelessWidget {
             ),
           ),
           _StatusChip(
-              label: DateFormat('dd MMM yyyy').format(consent.signedAt)),
+            label: DateFormat('dd MMM yyyy').format(consent.signedAt),
+          ),
         ],
       ),
       body: Column(
@@ -1239,8 +1253,8 @@ class _ConsentFormPageState extends State<_ConsentFormPage> {
     if (_approved.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content:
-                Text('Select at least one evaluation to approve.')),
+          content: Text('Select at least one evaluation to approve.'),
+        ),
       );
       return;
     }
@@ -1302,8 +1316,7 @@ class _ConsentFormPageState extends State<_ConsentFormPage> {
                         ChoiceChip(
                           label: Text(program.label),
                           selected: _program == program,
-                          onSelected: (_) =>
-                              setState(() => _program = program),
+                          onSelected: (_) => setState(() => _program = program),
                         ),
                     ],
                   ),
@@ -1462,9 +1475,9 @@ class _ListHeading extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-              color: PortalColors.textPrimary,
-            ),
+          fontWeight: FontWeight.w800,
+          color: PortalColors.textPrimary,
+        ),
       ),
     );
   }

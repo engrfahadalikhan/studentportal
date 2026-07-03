@@ -1158,7 +1158,18 @@ class _StudentMemberDropdown extends StatelessWidget {
 }
 
 class FypAdminGroupsPage extends StatefulWidget {
-  const FypAdminGroupsPage({super.key});
+  const FypAdminGroupsPage({
+    super.key,
+    this.title = 'FYP Groups (admin)',
+    this.actorName,
+    this.allowCoordinatorAppointment = true,
+    this.embedInParent = false,
+  });
+
+  final String title;
+  final String? actorName;
+  final bool allowCoordinatorAppointment;
+  final bool embedInParent;
 
   @override
   State<FypAdminGroupsPage> createState() => _FypAdminGroupsPageState();
@@ -1182,7 +1193,9 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
 
   FypRepository get _repo => FypRepository.instance;
 
-  String get _adminName {
+  String get _actorName {
+    final actor = widget.actorName?.trim() ?? '';
+    if (actor.isNotEmpty) return actor;
     final n = LoginStore.instance.currentUserName.trim();
     return n.isEmpty ? 'Admin' : n;
   }
@@ -1191,6 +1204,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     final names = <String>{
       for (final t in registration.registrationTeachers) t.name,
       for (final c in LoginStore.instance.customTeachers()) c.name,
+      if (_actorName != 'Admin') _actorName,
     }..removeWhere((e) => e.trim().isEmpty);
     final list = names.toList()..sort();
     return list;
@@ -1198,47 +1212,62 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.embedInParent) {
+      return Column(
+        children: [
+          Material(color: Colors.white, child: _phaseTabBar()),
+          Expanded(child: _content()),
+        ],
+      );
+    }
+
     return Scaffold(
       backgroundColor: PortalColors.pageBackground,
-      appBar: AppBar(
-        title: const Text('FYP Groups (admin)'),
-        bottom: TabBar(
-          controller: _tabs,
-          isScrollable: true,
-          tabs: const [
-            Tab(text: 'FYP-I'),
-            Tab(text: 'FYP-II'),
-            Tab(text: 'FYP-III'),
-            Tab(text: 'Panels'),
-            Tab(text: 'Meetings'),
+      appBar: AppBar(title: Text(widget.title), bottom: _phaseTabBar()),
+      body: _content(),
+    );
+  }
+
+  TabBar _phaseTabBar() {
+    return TabBar(
+      controller: _tabs,
+      isScrollable: true,
+      tabAlignment: TabAlignment.start,
+      tabs: const [
+        Tab(text: 'FYP-I'),
+        Tab(text: 'FYP-II'),
+        Tab(text: 'FYP-III'),
+        Tab(text: 'Panels'),
+        Tab(text: 'Meetings'),
+      ],
+    );
+  }
+
+  Widget _content() {
+    return AnimatedBuilder(
+      animation: _repo,
+      builder: (context, _) {
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              child: _banner(context),
+            ),
+            Expanded(
+              child: TabBarView(
+                controller: _tabs,
+                children: [
+                  _phaseTab(context, FypPhase.fyp1),
+                  _phaseTab(context, FypPhase.fyp2),
+                  _phaseTab(context, FypPhase.fyp3),
+                  _panelsTab(context),
+                  _meetingsTab(context),
+                ],
+              ),
+            ),
           ],
-        ),
-      ),
-      body: AnimatedBuilder(
-        animation: _repo,
-        builder: (context, _) {
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: _banner(context),
-              ),
-              Expanded(
-                child: TabBarView(
-                  controller: _tabs,
-                  children: [
-                    _phaseTab(context, FypPhase.fyp1),
-                    _phaseTab(context, FypPhase.fyp2),
-                    _phaseTab(context, FypPhase.fyp3),
-                    _panelsTab(context),
-                    _meetingsTab(context),
-                  ],
-                ),
-              ),
-            ],
-          );
-        },
-      ),
+        );
+      },
     );
   }
 
@@ -1299,11 +1328,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
         const SizedBox(height: 16),
         Row(
           children: [
-            const Icon(
-              Icons.person_off_outlined,
-              size: 18,
-              color: _amber,
-            ),
+            const Icon(Icons.person_off_outlined, size: 18, color: _amber),
             const SizedBox(width: 6),
             Expanded(
               child: Text(
@@ -1336,11 +1361,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     );
   }
 
-  Widget _ungroupedTile(
-    BuildContext context,
-    StudentRecord s,
-    FypPhase phase,
-  ) {
+  Widget _ungroupedTile(BuildContext context, StudentRecord s, FypPhase phase) {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1408,7 +1429,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
         teacherNames: _teacherNames(),
         defaultSupervisor: null,
         creatorRole: 'coordinator',
-        creatorName: _adminName,
+        creatorName: _actorName,
         allowDirectAllot: true,
         studentChoices: fypEligibleStudents(),
         firstMember: firstMember,
@@ -1496,9 +1517,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  p.members.isEmpty
-                      ? 'No members'
-                      : p.members.join(', '),
+                  p.members.isEmpty ? 'No members' : p.members.join(', '),
                   style: const TextStyle(fontSize: 12.5),
                 ),
               ],
@@ -1731,9 +1750,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
                   children: [
                     TextField(
                       controller: titleCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Title *',
-                      ),
+                      decoration: const InputDecoration(labelText: 'Title *'),
                     ),
                     const SizedBox(height: 8),
                     TextField(
@@ -1840,7 +1857,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
         note: note,
         formRequired: formRequired,
         formName: formName,
-        createdBy: _adminName,
+        createdBy: _actorName,
       );
     }
   }
@@ -1867,13 +1884,25 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
               ),
             ),
           ),
-          TextButton(
-            onPressed: () => _pickCoordinator(context),
-            child: const Text(
-              'Appoint',
-              style: TextStyle(color: Color(0xFFE7C955)),
+          if (widget.allowCoordinatorAppointment)
+            TextButton(
+              onPressed: () => _pickCoordinator(context),
+              child: const Text(
+                'Appoint',
+                style: TextStyle(color: Color(0xFFE7C955)),
+              ),
+            )
+          else
+            const Padding(
+              padding: EdgeInsets.only(left: 8),
+              child: Text(
+                'Coordinator view',
+                style: TextStyle(
+                  color: Color(0xFFE7C955),
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -1946,7 +1975,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
               onPressed: () => _repo.coordinatorDecision(
                 groupId: g.id,
                 approve: true,
-                byName: _adminName,
+                byName: _actorName,
               ),
               icon: const Icon(Icons.check_rounded, size: 18),
               label: const Text('Allot'),
@@ -2019,7 +2048,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
       _repo.coordinatorDecision(
         groupId: g.id,
         approve: false,
-        byName: _adminName,
+        byName: _actorName,
         reason: reason,
       );
     }
