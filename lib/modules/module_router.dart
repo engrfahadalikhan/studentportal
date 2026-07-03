@@ -102,7 +102,7 @@ class ModuleRouter {
                 title: 'Digital Student ID',
                 description: 'Student-only module.',
                 icon: Icons.badge_outlined,
-                color: Color(0xFF2948B7),
+                color: Color(0xFF8A6E16),
               );
       case FeatureKey.documentCenter:
         return (_) => const ModuleComingSoonScreen(
@@ -162,7 +162,7 @@ class ModuleRouter {
               description:
                   'Hostel room allocation, mess menu, bus routes, transport pass renewal.',
               icon: Icons.directions_bus_outlined,
-              color: Color(0xFF2948B7),
+              color: Color(0xFF8A6E16),
               bulletPoints: [
                 'Hostel block / room / roommate listing',
                 'Bus routes with live stop ETA',
@@ -200,7 +200,7 @@ class ModuleRouter {
               title: 'Messages',
               description: 'Direct chat between student, teacher and admin.',
               icon: Icons.chat_bubble_outline,
-              color: Color(0xFF2948B7),
+              color: Color(0xFF8A6E16),
               bulletPoints: [
                 '1:1 threads with read receipts',
                 'Threads scoped to a course or FYP group',
@@ -273,7 +273,7 @@ class ModuleRouter {
       description:
           'Teacher-side grade compilation. You can already enter and view per-assessment marks under Live / Results inside the assessment app.',
       icon: Icons.grade_outlined,
-      color: Color(0xFF2948B7),
+      color: Color(0xFF8A6E16),
       bulletPoints: [
         'Bulk import marks from CSV',
         'Per-course gradebook with weighted aggregation',

@@ -12,10 +12,10 @@ import 'package:image/image.dart' as img;
 
 const int size = 1024;
 
-// Brand colors.
-final _indigo = [79, 70, 229]; // #4F46E5
-final _teal = [20, 184, 166]; // #14B8A6
-final _white = img.ColorRgba8(255, 255, 255, 255);
+// Brand colors — elegant black + gold (matches the app theme).
+final _indigo = [27, 24, 19]; // #1B1813 warm near-black (gradient start)
+final _teal = [201, 162, 39]; // #C9A227 bright gold (gradient end)
+final _white = img.ColorRgba8(255, 248, 224, 255); // warm cream cap
 
 void main() {
   Directory('assets').createSync(recursive: true);

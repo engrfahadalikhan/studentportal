@@ -155,6 +155,27 @@ class AssessmentSettings {
   final bool autoSubmit;
   final bool showResultAfterSubmission;
   final bool manualGrading;
+
+  Map<String, Object?> toJson() => {
+    'randomizeQuestions': randomizeQuestions,
+    'randomizeOptions': randomizeOptions,
+    'oneAttemptOnly': oneAttemptOnly,
+    'autoSubmit': autoSubmit,
+    'showResultAfterSubmission': showResultAfterSubmission,
+    'manualGrading': manualGrading,
+  };
+
+  static AssessmentSettings fromJson(Map<String, Object?> j) {
+    bool b(String k) => j[k] == true;
+    return AssessmentSettings(
+      randomizeQuestions: b('randomizeQuestions'),
+      randomizeOptions: b('randomizeOptions'),
+      oneAttemptOnly: b('oneAttemptOnly'),
+      autoSubmit: b('autoSubmit'),
+      showResultAfterSubmission: b('showResultAfterSubmission'),
+      manualGrading: b('manualGrading'),
+    );
+  }
 }
 
 class AssessmentQuestion {
@@ -165,6 +186,7 @@ class AssessmentQuestion {
     required this.marks,
     this.options = const [],
     this.correctAnswer,
+    this.optionMarks = const {},
     this.timeMinutes = 0,
   });
 
@@ -174,7 +196,61 @@ class AssessmentQuestion {
   final int marks;
   final List<String> options;
   final String? correctAnswer;
+
+  /// Per-option partial credit set by the teacher at scan time: option text →
+  /// marks. When non-empty the student earns the marks of the option they
+  /// picked (0 if blank). NEVER put in the student QR — it is the answer key.
+  final Map<String, int> optionMarks;
   final int timeMinutes;
+
+  AssessmentQuestion copyWith({
+    String? correctAnswer,
+    int? marks,
+    Map<String, int>? optionMarks,
+  }) {
+    return AssessmentQuestion(
+      id: id,
+      type: type,
+      question: question,
+      marks: marks ?? this.marks,
+      options: options,
+      correctAnswer: correctAnswer ?? this.correctAnswer,
+      optionMarks: optionMarks ?? this.optionMarks,
+      timeMinutes: timeMinutes,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'type': type.index,
+    'question': question,
+    'marks': marks,
+    'options': options,
+    'correctAnswer': correctAnswer,
+    'optionMarks': optionMarks,
+    'timeMinutes': timeMinutes,
+  };
+
+  static AssessmentQuestion fromJson(Map<String, Object?> j) {
+    final ti = (j['type'] as num?)?.toInt() ?? 0;
+    return AssessmentQuestion(
+      id: (j['id'] ?? '').toString(),
+      type: (ti >= 0 && ti < QuestionType.values.length)
+          ? QuestionType.values[ti]
+          : QuestionType.mcq,
+      question: (j['question'] ?? '').toString(),
+      marks: (j['marks'] as num?)?.toInt() ?? 0,
+      options: [
+        for (final o in (j['options'] as List?) ?? const []) o.toString(),
+      ],
+      correctAnswer: j['correctAnswer']?.toString(),
+      optionMarks: {
+        for (final e in ((j['optionMarks'] as Map?) ?? const {}).entries)
+          e.key.toString(): (e.value as num?)?.toInt() ?? 0,
+      },
+      timeMinutes: (j['timeMinutes'] as num?)?.toInt() ?? 0,
+    );
+  }
 }
 
 class Assessment {
@@ -195,6 +271,7 @@ class Assessment {
     required this.settings,
     required this.status,
     required this.qrCode,
+    this.expectedStudents = 0,
   });
 
   final String id;
@@ -214,6 +291,11 @@ class Assessment {
   final AssessmentStatus status;
   final String qrCode;
 
+  /// Total students expected to attempt this paper (sum of the selected
+  /// courses' enrolment) — used for the teacher's submitted/absent stats.
+  /// Teacher-side only; never travels in the student QR.
+  final int expectedStudents;
+
   Assessment copyWith({
     String? id,
     String? title,
@@ -231,6 +313,7 @@ class Assessment {
     AssessmentSettings? settings,
     AssessmentStatus? status,
     String? qrCode,
+    int? expectedStudents,
   }) {
     return Assessment(
       id: id ?? this.id,
@@ -249,6 +332,71 @@ class Assessment {
       settings: settings ?? this.settings,
       status: status ?? this.status,
       qrCode: qrCode ?? this.qrCode,
+      expectedStudents: expectedStudents ?? this.expectedStudents,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'title': title,
+    'type': type.index,
+    'courseId': courseId,
+    'program': program,
+    'semester': semester,
+    'section': section,
+    'durationMinutes': durationMinutes,
+    'totalMarks': totalMarks,
+    'startTime': startTime.toIso8601String(),
+    'endTime': endTime.toIso8601String(),
+    'instructions': instructions,
+    'questions': [for (final q in questions) q.toJson()],
+    'settings': settings.toJson(),
+    'status': status.index,
+    'qrCode': qrCode,
+    'expectedStudents': expectedStudents,
+  };
+
+  static Assessment fromJson(Map<String, Object?> j) {
+    final ti = (j['type'] as num?)?.toInt() ?? 0;
+    final si = (j['status'] as num?)?.toInt() ?? 0;
+    DateTime dt(Object? v) =>
+        DateTime.tryParse(v?.toString() ?? '') ?? DateTime.now();
+    return Assessment(
+      id: (j['id'] ?? '').toString(),
+      title: (j['title'] ?? '').toString(),
+      type: (ti >= 0 && ti < AssessmentType.values.length)
+          ? AssessmentType.values[ti]
+          : AssessmentType.quiz,
+      courseId: (j['courseId'] ?? '').toString(),
+      program: (j['program'] ?? '').toString(),
+      semester: (j['semester'] ?? '').toString(),
+      section: (j['section'] ?? '').toString(),
+      durationMinutes: (j['durationMinutes'] as num?)?.toInt() ?? 0,
+      totalMarks: (j['totalMarks'] as num?)?.toInt() ?? 0,
+      startTime: dt(j['startTime']),
+      endTime: dt(j['endTime']),
+      instructions: (j['instructions'] ?? '').toString(),
+      questions: [
+        for (final q in (j['questions'] as List?) ?? const [])
+          if (q is Map) AssessmentQuestion.fromJson(q.cast<String, Object?>()),
+      ],
+      settings: j['settings'] is Map
+          ? AssessmentSettings.fromJson(
+              (j['settings'] as Map).cast<String, Object?>(),
+            )
+          : const AssessmentSettings(
+              randomizeQuestions: true,
+              randomizeOptions: true,
+              oneAttemptOnly: true,
+              autoSubmit: true,
+              showResultAfterSubmission: false,
+              manualGrading: false,
+            ),
+      status: (si >= 0 && si < AssessmentStatus.values.length)
+          ? AssessmentStatus.values[si]
+          : AssessmentStatus.draft,
+      qrCode: (j['qrCode'] ?? '').toString(),
+      expectedStudents: (j['expectedStudents'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -263,6 +411,11 @@ class AssessmentSubmission {
     required this.warningCount,
     required this.flags,
     required this.progress,
+    this.assessmentTitle = '',
+    this.studentName = '',
+    this.studentProgram = '',
+    this.studentSemester = '',
+    this.studentSection = '',
     this.startedAt,
     this.submittedAt,
     this.marks,
@@ -271,7 +424,19 @@ class AssessmentSubmission {
 
   final String id;
   final String assessmentId;
+
+  /// Snapshot of the assessment title at submit time — kept locally so the
+  /// student's "My submissions" history can show a readable name (and re-share
+  /// the QR) even after the original paper is gone. Never sent in the QR.
+  final String assessmentTitle;
   final String studentId;
+
+  /// Student identity carried WITH the submission (and its QR) so the teacher
+  /// can build class-wise marks lists (BSCS 2A …) without a separate roster.
+  final String studentName;
+  final String studentProgram;
+  final String studentSemester;
+  final String studentSection;
   final AttemptStatus status;
   final DateTime? startedAt;
   final DateTime? submittedAt;
@@ -285,7 +450,12 @@ class AssessmentSubmission {
   AssessmentSubmission copyWith({
     String? id,
     String? assessmentId,
+    String? assessmentTitle,
     String? studentId,
+    String? studentName,
+    String? studentProgram,
+    String? studentSemester,
+    String? studentSection,
     AttemptStatus? status,
     DateTime? startedAt,
     DateTime? submittedAt,
@@ -299,7 +469,12 @@ class AssessmentSubmission {
     return AssessmentSubmission(
       id: id ?? this.id,
       assessmentId: assessmentId ?? this.assessmentId,
+      assessmentTitle: assessmentTitle ?? this.assessmentTitle,
       studentId: studentId ?? this.studentId,
+      studentName: studentName ?? this.studentName,
+      studentProgram: studentProgram ?? this.studentProgram,
+      studentSemester: studentSemester ?? this.studentSemester,
+      studentSection: studentSection ?? this.studentSection,
       status: status ?? this.status,
       startedAt: startedAt ?? this.startedAt,
       submittedAt: submittedAt ?? this.submittedAt,
@@ -309,6 +484,59 @@ class AssessmentSubmission {
       flags: flags ?? this.flags,
       progress: progress ?? this.progress,
       lastActivity: lastActivity ?? this.lastActivity,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'assessmentId': assessmentId,
+    'assessmentTitle': assessmentTitle,
+    'studentId': studentId,
+    'studentName': studentName,
+    'studentProgram': studentProgram,
+    'studentSemester': studentSemester,
+    'studentSection': studentSection,
+    'status': status.index,
+    'startedAt': startedAt?.toIso8601String(),
+    'submittedAt': submittedAt?.toIso8601String(),
+    'answers': answers,
+    'marks': marks,
+    'warningCount': warningCount,
+    'flags': flags,
+    'progress': progress,
+    'lastActivity': lastActivity?.toIso8601String(),
+  };
+
+  static AssessmentSubmission fromJson(Map<String, Object?> json) {
+    final statusIndex = (json['status'] as num?)?.toInt() ?? 0;
+    DateTime? parse(Object? v) =>
+        v == null ? null : DateTime.tryParse(v.toString());
+    return AssessmentSubmission(
+      id: (json['id'] ?? '').toString(),
+      assessmentId: (json['assessmentId'] ?? '').toString(),
+      assessmentTitle: (json['assessmentTitle'] ?? '').toString(),
+      studentId: (json['studentId'] ?? '').toString(),
+      studentName: (json['studentName'] ?? '').toString(),
+      studentProgram: (json['studentProgram'] ?? '').toString(),
+      studentSemester: (json['studentSemester'] ?? '').toString(),
+      studentSection: (json['studentSection'] ?? '').toString(),
+      status:
+          (statusIndex >= 0 && statusIndex < AttemptStatus.values.length)
+          ? AttemptStatus.values[statusIndex]
+          : AttemptStatus.submitted,
+      startedAt: parse(json['startedAt']),
+      submittedAt: parse(json['submittedAt']),
+      answers: {
+        for (final e in ((json['answers'] as Map?) ?? const {}).entries)
+          e.key.toString(): e.value.toString(),
+      },
+      marks: (json['marks'] as num?)?.toInt(),
+      warningCount: (json['warningCount'] as num?)?.toInt() ?? 0,
+      flags: [
+        for (final f in (json['flags'] as List?) ?? const []) f.toString(),
+      ],
+      progress: (json['progress'] as num?)?.toInt() ?? 0,
+      lastActivity: parse(json['lastActivity']),
     );
   }
 }

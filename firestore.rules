@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The app has no Firebase Auth (offline logins), so the app's own
+    // collections are open. Every doc id is a stable record id, so writes are
+    // idempotent and can never create duplicates.
+    match /attendance_scans/{id}   { allow read, write: if true; }
+    match /exam_students/{id}      { allow read, write: if true; }
+    match /exam_halls/{id}         { allow read, write: if true; }
+    match /exam_sheets/{id}        { allow read, write: if true; }
+    match /exam_records/{id}       { allow read, write: if true; }
+    match /exam_ufm/{id}           { allow read, write: if true; }
+    match /exam_deleted/{id}       { allow read, write: if true; }
+    match /cloud_assignments/{id}  { allow read, write: if true; }
+    match /cloud_submissions/{id}  { allow read, write: if true; }
+    match /cloud_paper_batches/{id}{ allow read, write: if true; }
+    match /slot_slots/{id}         { allow read, write: if true; }
+    match /slot_rows/{id}          { allow read, write: if true; }
+    match /slot_receipts/{id}      { allow read, write: if true; }
+    match /slot_contributions/{id} { allow read, write: if true; }
+    match /cloud_fyp_groups/{id}   { allow read, write: if true; }
+    match /cloud_fyp_panels/{id}   { allow read, write: if true; }
+    match /cloud_fyp_meetings/{id} { allow read, write: if true; }
+    match /cloud_credentials/{id}  { allow read, write: if true; }
+
+    // Everything else stays locked.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -10,6 +10,9 @@ import '../assessment/assessment_models.dart';
 import '../assessment/registration_course_data.dart' as registration;
 import '../assessment/teacher_dashboard_models.dart';
 import '../data/local_student_enrollments.dart';
+import 'admin_data_bundle.dart';
+import 'cloud_sync_service.dart';
+import 'login_store.dart';
 
 class TeacherDashboardDatabase {
   TeacherDashboardDatabase._();
@@ -18,6 +21,49 @@ class TeacherDashboardDatabase {
   static const String _importVersion = '2026-05-23-teacher-dashboard-v3';
 
   Database? _db;
+
+  /// Called after any exam-attendance write (mark / add / remove / accept), so
+  /// the cloud sync can push the change. Set by CloudSyncService.
+  void Function()? onExamDataChanged;
+
+  /// Called with (table, id) pairs when rows are DELETED locally, so the cloud
+  /// sync can delete them everywhere (tombstones). Set by CloudSyncService.
+  void Function(List<(String, String)> items)? onExamDataRemoved;
+
+  /// The logged-in teacher/invigilator's name, stamped on records they scan.
+  String get _collectorName => LoginStore.instance.currentUserName.trim();
+
+  /// Deletes one row by primary key — used when a cloud tombstone arrives.
+  /// [table] is whitelisted to the synced exam/module tables.
+  Future<void> deleteRowById(String table, String id) async {
+    const allowed = {
+      'exam_attendance_records',
+      'exam_ufm_cases',
+      'exam_attendance_sheets',
+      'teacher_assignments',
+      'student_submissions',
+    };
+    if (!allowed.contains(table) || id.isEmpty) return;
+    final db = await database;
+    await db.delete(table, where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Merges cloud rows into [table] keep-newest by [tsCol] (insert-only when
+  /// [tsCol] is null). Used by the cloud pull so an older cloud copy never
+  /// overwrites a newer local edit.
+  Future<void> mergeCloudRows(
+    String table,
+    List<Map<String, Object?>> rows, {
+    String? tsCol,
+  }) async {
+    final db = await database;
+    await TableSync.merge(
+      db,
+      table,
+      rows,
+      tsOf: tsCol == null ? null : (r) => TableSync.ts(r, tsCol),
+    );
+  }
 
   // Cached seating-plan seed, keyed by QR token and by roll number, so the
   // live hall-scan screen can resolve a scanned seat QR to the student's real
@@ -59,11 +105,13 @@ class TeacherDashboardDatabase {
       'teacher_id = ? AND is_read = 0',
       [teacherId],
     );
+    // Show ALL attendance held on this device (own + accepted + imported/shared
+    // from the other admin), so a consolidated set is fully visible.
     final attendanceSheets = await _countWhere(
       db,
       'exam_attendance_sheets',
-      'teacher_id = ?',
-      [teacherId],
+      '1 = 1',
+      const [],
     );
     final sharedAttendanceSheets = await _countWhere(
       db,
@@ -299,8 +347,8 @@ class TeacherDashboardDatabase {
       totalSheets: await _countWhere(
         db,
         'exam_attendance_sheets',
-        'teacher_id = ?',
-        [teacherId],
+        '1 = 1',
+        const [],
       ),
       sharedSheets: await _countWhere(
         db,
@@ -553,13 +601,89 @@ class TeacherDashboardDatabase {
       JOIN courses c ON c.id = sh.course_id
       JOIN exam_halls h ON h.id = sh.hall_id
       LEFT JOIN exam_attendance_records r ON r.sheet_id = sh.id
-      WHERE sh.teacher_id = ?
       GROUP BY sh.id
       ORDER BY sh.last_updated_at DESC
       ''',
-      [teacherId],
     );
     return rows.map(_attendanceSheetFromRow).toList(growable: false);
+  }
+
+  /// Every attendance record this teacher holds (own scans + accepted/merged),
+  /// flattened for the end-of-exam summary (slot / program / hall drill-down).
+  Future<List<AttendanceSummaryRow>> loadAttendanceSummaryRows(
+    String teacherId,
+  ) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT sh.exam_date_time AS dt, h.name AS hall,
+             r.class_group AS program, r.status AS status, r.flag AS flag,
+             r.collected_by AS collected_by,
+             s.roll_no AS roll, s.name AS name
+      FROM exam_attendance_sheets sh
+      JOIN exam_halls h ON h.id = sh.hall_id
+      JOIN exam_attendance_records r ON r.sheet_id = sh.id
+      JOIN students s ON s.id = r.student_id
+      ''',
+    );
+    return rows
+        .map(
+          (row) => AttendanceSummaryRow(
+            dateTime:
+                DateTime.tryParse(row['dt']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0),
+            hall: (row['hall'] ?? '').toString(),
+            program: (row['program'] ?? '').toString().trim().isEmpty
+                ? 'Unspecified'
+                : (row['program']).toString().trim(),
+            status: (row['status'] ?? '').toString(),
+            flag: (row['flag'] ?? '').toString(),
+            rollNo: (row['roll'] ?? '').toString(),
+            studentName: (row['name'] ?? '').toString(),
+            collectedBy: (row['collected_by'] ?? '').toString(),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  /// Every UFM case the teacher holds (own + accepted), with hall / program /
+  /// date context — feeds the teacher-wide UFM PDF.
+  Future<List<UfmSummaryRow>> loadUfmSummaryRows(String teacherId) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT sh.exam_date_time AS dt, h.name AS hall,
+             s.roll_no AS roll, s.name AS name,
+             u.allegation AS allegation, u.details AS details,
+             u.collected_by AS collected_by,
+             (SELECT r.class_group FROM exam_attendance_records r
+                WHERE r.sheet_id = u.sheet_id AND r.student_id = u.student_id
+                LIMIT 1) AS program
+      FROM exam_ufm_cases u
+      JOIN exam_attendance_sheets sh ON sh.id = u.sheet_id
+      JOIN exam_halls h ON h.id = sh.hall_id
+      JOIN students s ON s.id = u.student_id
+      ORDER BY sh.exam_date_time
+      ''',
+    );
+    return rows
+        .map(
+          (row) => UfmSummaryRow(
+            dateTime:
+                DateTime.tryParse(row['dt']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0),
+            hall: (row['hall'] ?? '').toString(),
+            program: (row['program'] ?? '').toString().trim().isEmpty
+                ? 'Unspecified'
+                : (row['program']).toString().trim(),
+            rollNo: (row['roll'] ?? '').toString(),
+            studentName: (row['name'] ?? '').toString(),
+            allegation: (row['allegation'] ?? '').toString(),
+            details: (row['details'] ?? '').toString(),
+            collectedBy: (row['collected_by'] ?? '').toString(),
+          ),
+        )
+        .toList(growable: false);
   }
 
   Future<String> shareAttendanceSheet({
@@ -612,6 +736,7 @@ class TeacherDashboardDatabase {
         {
           'status': status,
           'marked_at': now,
+          'collected_by': _collectorName,
           if (seatLabel.isNotEmpty) 'seat_label': seatLabel,
           if (colNo > 0) 'col_no': colNo,
           if (chairNo > 0) 'chair_no': chairNo,
@@ -627,6 +752,7 @@ class TeacherDashboardDatabase {
         whereArgs: [sheetId],
       );
     });
+    onExamDataChanged?.call();
   }
 
   /// Adds a student to a sheet on the fly (dynamic-roster halls): used when a
@@ -661,6 +787,7 @@ class TeacherDashboardDatabase {
         'student_id': studentId,
         'status': status,
         'marked_at': now,
+        'collected_by': _collectorName,
         'seat_label': seatLabel,
         'col_no': colNo,
         'chair_no': chairNo,
@@ -673,17 +800,39 @@ class TeacherDashboardDatabase {
         whereArgs: [sheetId],
       );
     });
+    onExamDataChanged?.call();
   }
 
   /// Deletes one attendance record (used when a QR was scanned by mistake).
-  /// Any UFM case for that student in the sheet is removed too.
+  /// Any UFM case for that student in the sheet is removed too. The deleted
+  /// row ids are reported so the cloud sync can delete them everywhere.
   Future<void> removeAttendanceRecord({
     required String sheetId,
     required String studentId,
   }) async {
     final db = await database;
     final now = DateTime.now().toIso8601String();
+    final removed = <(String, String)>[];
     await db.transaction((txn) async {
+      // Capture ids first so the deletion can propagate to other devices.
+      final recRows = await txn.query(
+        'exam_attendance_records',
+        columns: ['id'],
+        where: 'sheet_id = ? AND student_id = ?',
+        whereArgs: [sheetId, studentId],
+      );
+      final ufmRows = await txn.query(
+        'exam_ufm_cases',
+        columns: ['id'],
+        where: 'sheet_id = ? AND student_id = ?',
+        whereArgs: [sheetId, studentId],
+      );
+      for (final r in recRows) {
+        removed.add(('exam_attendance_records', r['id'].toString()));
+      }
+      for (final u in ufmRows) {
+        removed.add(('exam_ufm_cases', u['id'].toString()));
+      }
       await txn.delete(
         'exam_attendance_records',
         where: 'sheet_id = ? AND student_id = ?',
@@ -701,6 +850,53 @@ class TeacherDashboardDatabase {
         whereArgs: [sheetId],
       );
     });
+    if (removed.isNotEmpty) onExamDataRemoved?.call(removed);
+    onExamDataChanged?.call();
+  }
+
+  /// Deletes a whole saved attendance sheet — its records, UFM cases and the
+  /// sheet row itself. Used by "Saved Stats" delete (with a warning first).
+  /// Deleted ids are reported so the deletion reaches every synced device.
+  Future<void> deleteAttendanceSheet(String sheetId) async {
+    final db = await database;
+    final removed = <(String, String)>[];
+    await db.transaction((txn) async {
+      final recRows = await txn.query(
+        'exam_attendance_records',
+        columns: ['id'],
+        where: 'sheet_id = ?',
+        whereArgs: [sheetId],
+      );
+      final ufmRows = await txn.query(
+        'exam_ufm_cases',
+        columns: ['id'],
+        where: 'sheet_id = ?',
+        whereArgs: [sheetId],
+      );
+      for (final r in recRows) {
+        removed.add(('exam_attendance_records', r['id'].toString()));
+      }
+      for (final u in ufmRows) {
+        removed.add(('exam_ufm_cases', u['id'].toString()));
+      }
+      removed.add(('exam_attendance_sheets', sheetId));
+      await txn.delete(
+        'exam_attendance_records',
+        where: 'sheet_id = ?',
+        whereArgs: [sheetId],
+      );
+      await txn.delete(
+        'exam_ufm_cases',
+        where: 'sheet_id = ?',
+        whereArgs: [sheetId],
+      );
+      await txn.delete(
+        'exam_attendance_sheets',
+        where: 'id = ?',
+        whereArgs: [sheetId],
+      );
+    });
+    onExamDataRemoved?.call(removed);
   }
 
   Future<List<UfmCase>> loadUfmCases(String sheetId) async {
@@ -749,12 +945,16 @@ class TeacherDashboardDatabase {
       'allegation': allegation,
       'details': details.trim(),
       'created_at': DateTime.now().toIso8601String(),
+      // Which invigilator recorded this UFM case.
+      'collected_by': _collectorName,
     });
+    onExamDataChanged?.call();
   }
 
   Future<void> deleteUfmCase(String caseId) async {
     final db = await database;
     await db.delete('exam_ufm_cases', where: 'id = ?', whereArgs: [caseId]);
+    onExamDataRemoved?.call([('exam_ufm_cases', caseId)]);
   }
 
   Future<AttendanceSharingData> loadAttendanceSharing(String teacherId) async {
@@ -784,6 +984,214 @@ class TeacherDashboardDatabase {
           .map(_acceptedSheetFromRow)
           .toList(growable: false),
     );
+  }
+
+  // ---- Teacher-given assignments (separate table) -------------------------
+
+  // ---------------------------------------------------- admin data-share
+  Future<Map<String, dynamic>> exportAssessments() async {
+    final db = await database;
+    return {
+      'teacher_assignments': await TableSync.dump(db, 'teacher_assignments'),
+      'student_submissions': await TableSync.dump(db, 'student_submissions'),
+    };
+  }
+
+  Future<(int, int)> importAssessments(Map<String, dynamic> data) async {
+    final db = await database;
+    final a = await TableSync.merge(
+      db,
+      'teacher_assignments',
+      (data['teacher_assignments'] as List?) ?? const [],
+      tsOf: (r) => TableSync.ts(r, 'updated_at'),
+    );
+    final b = await TableSync.merge(
+      db,
+      'student_submissions',
+      (data['student_submissions'] as List?) ?? const [],
+      tsOf: (r) => TableSync.ts(r, 'updated_at'),
+    );
+    return (a.$1 + b.$1, a.$2 + b.$2);
+  }
+
+  /// The exam-attendance-sheet subsystem that UFM cases hang off (students,
+  /// halls, sheets, records, ufm) — dumped/merged in dependency order.
+  Future<Map<String, dynamic>> exportUfm() async {
+    final db = await database;
+    return {
+      for (final t in const [
+        'students',
+        'exam_halls',
+        'exam_attendance_sheets',
+        'exam_attendance_records',
+        'exam_ufm_cases',
+      ])
+        t: await TableSync.dump(db, t),
+    };
+  }
+
+  Future<(int, int)> importUfm(Map<String, dynamic> data) async {
+    final db = await database;
+    var added = 0;
+    var updated = 0;
+    Future<void> mrg(
+      String table, {
+      DateTime? Function(Map<String, Object?>)? tsOf,
+    }) async {
+      final res = await TableSync.merge(
+        db,
+        table,
+        (data[table] as List?) ?? const [],
+        tsOf: tsOf,
+      );
+      added += res.$1;
+      updated += res.$2;
+    }
+
+    await mrg('students'); // reference rows — add if missing
+    await mrg('exam_halls', tsOf: (r) => TableSync.ts(r, 'created_at'));
+    await mrg(
+      'exam_attendance_sheets',
+      tsOf: (r) => TableSync.ts(r, 'last_updated_at'),
+    );
+    await mrg('exam_attendance_records');
+    await mrg('exam_ufm_cases', tsOf: (r) => TableSync.ts(r, 'created_at'));
+    return (added, updated);
+  }
+
+  // ---------------------------------------------------- cloud sync helpers
+  /// Rows of [table] whose [tsCol] is greater than [sinceIso] (all rows when
+  /// [sinceIso] is null/empty). ISO-8601 strings sort lexicographically.
+  Future<List<Map<String, Object?>>> examRowsSince(
+    String table,
+    String tsCol,
+    String? sinceIso,
+  ) async {
+    final db = await database;
+    final rows = (sinceIso == null || sinceIso.isEmpty)
+        ? await db.query(table)
+        : await db.query(table, where: '$tsCol > ?', whereArgs: [sinceIso]);
+    return rows.map((r) => Map<String, Object?>.from(r)).toList();
+  }
+
+  /// Rows of [table] with an id in [ids] (chunked to respect SQLite limits).
+  Future<List<Map<String, Object?>>> examRowsByIds(
+    String table,
+    Set<String> ids,
+  ) async {
+    if (ids.isEmpty) return const [];
+    final db = await database;
+    final list = ids.toList();
+    final out = <Map<String, Object?>>[];
+    for (var i = 0; i < list.length; i += 400) {
+      final chunk = list.skip(i).take(400).toList();
+      final ph = List.filled(chunk.length, '?').join(',');
+      final rows = await db.query(
+        table,
+        where: 'id IN ($ph)',
+        whereArgs: chunk,
+      );
+      out.addAll(rows.map((r) => Map<String, Object?>.from(r)));
+    }
+    return out;
+  }
+
+  /// Inserts/replaces [rows] into [table] by primary key (cloud pull).
+  Future<void> upsertExamRows(
+    String table,
+    List<Map<String, Object?>> rows,
+  ) async {
+    if (rows.isEmpty) return;
+    final db = await database;
+    await db.transaction((txn) async {
+      for (final r in rows) {
+        await txn.insert(
+          table,
+          r,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  /// Replaces the whole `teacher_assignments` table with [items] (each is an
+  /// Assessment.toJson map). The full paper — questions + answer key — lives in
+  /// the `data` column; id/course/title/type are mirrored for querying.
+  Future<void> saveTeacherAssignments(
+    List<Map<String, Object?>> items,
+  ) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('teacher_assignments');
+      final now = DateTime.now().toIso8601String();
+      for (final j in items) {
+        final id = (j['id'] ?? '').toString();
+        if (id.isEmpty) continue;
+        await txn.insert('teacher_assignments', {
+          'id': id,
+          'course_id': (j['courseId'] ?? '').toString(),
+          'title': (j['title'] ?? '').toString(),
+          'type': '${j['type'] ?? ''}',
+          'updated_at': now,
+          'data': jsonEncode(j),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
+    CloudSyncService.instance.pushModulesSoon('assessments');
+  }
+
+  Future<List<Map<String, Object?>>> loadTeacherAssignments() async {
+    final db = await database;
+    final rows = await db.query('teacher_assignments');
+    final out = <Map<String, Object?>>[];
+    for (final r in rows) {
+      try {
+        final d = jsonDecode((r['data'] ?? '{}').toString());
+        if (d is Map) out.add(d.cast<String, Object?>());
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  // ---- Student-completed submissions (separate table) ---------------------
+
+  Future<void> saveStudentSubmissions(
+    List<Map<String, Object?>> items,
+  ) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('student_submissions');
+      final now = DateTime.now().toIso8601String();
+      for (final j in items) {
+        final id = (j['id'] ?? '').toString();
+        if (id.isEmpty) continue;
+        await txn.insert('student_submissions', {
+          'id': id,
+          'assessment_id': (j['assessmentId'] ?? '').toString(),
+          'student_id': (j['studentId'] ?? '').toString(),
+          'student_name': (j['studentName'] ?? '').toString(),
+          'marks': j['marks'] is int
+              ? j['marks']
+              : int.tryParse('${j['marks']}'),
+          'updated_at': now,
+          'data': jsonEncode(j),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
+    CloudSyncService.instance.pushModulesSoon('assessments');
+  }
+
+  Future<List<Map<String, Object?>>> loadStudentSubmissions() async {
+    final db = await database;
+    final rows = await db.query('student_submissions');
+    final out = <Map<String, Object?>>[];
+    for (final r in rows) {
+      try {
+        final d = jsonDecode((r['data'] ?? '{}').toString());
+        if (d is Map) out.add(d.cast<String, Object?>());
+      } catch (_) {}
+    }
+    return out;
   }
 
   Future<void> _createTables(Database db) async {
@@ -855,6 +1263,29 @@ class TeacherDashboardDatabase {
         submitted_at TEXT,
         FOREIGN KEY(assessment_id) REFERENCES assessments(id),
         FOREIGN KEY(student_id) REFERENCES students(id)
+      )
+    ''');
+    // The assignments a TEACHER gives (full paper: questions + answer key) and
+    // the submissions STUDENTS complete are kept in two SEPARATE tables.
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS teacher_assignments(
+        id TEXT PRIMARY KEY,
+        course_id TEXT,
+        title TEXT,
+        type TEXT,
+        updated_at TEXT,
+        data TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS student_submissions(
+        id TEXT PRIMARY KEY,
+        assessment_id TEXT,
+        student_id TEXT,
+        student_name TEXT,
+        marks INTEGER,
+        updated_at TEXT,
+        data TEXT NOT NULL
       )
     ''');
     await db.execute('''
@@ -933,6 +1364,9 @@ class TeacherDashboardDatabase {
       'ALTER TABLE exam_attendance_records ADD COLUMN col_no INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE exam_attendance_records ADD COLUMN chair_no INTEGER NOT NULL DEFAULT 0',
       "ALTER TABLE exam_attendance_records ADD COLUMN class_group TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE exam_attendance_records ADD COLUMN flag TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE exam_attendance_records ADD COLUMN collected_by TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE exam_ufm_cases ADD COLUMN collected_by TEXT NOT NULL DEFAULT ''",
     ]) {
       try {
         await db.execute(statement);
@@ -1510,7 +1944,7 @@ class TeacherDashboardDatabase {
     final rows = await db.rawQuery(
       '''
       SELECT s.id, s.name, s.roll_no, r.status,
-             r.seat_label, r.col_no, r.chair_no, r.class_group
+             r.seat_label, r.col_no, r.chair_no, r.class_group, r.flag
       FROM exam_attendance_records r
       JOIN students s ON s.id = r.student_id
       WHERE r.sheet_id = ?
@@ -1530,9 +1964,27 @@ class TeacherDashboardDatabase {
             colNo: _intValue(row['col_no']),
             chairNo: _intValue(row['chair_no']),
             classGroup: row['class_group']?.toString() ?? '',
+            flag: row['flag']?.toString() ?? '',
           ),
         )
         .toList(growable: false);
+  }
+
+  /// Marks [studentId] PRESENT with an extra [flag] ('qr_problem' or
+  /// 'paper_not_returned', or '' to clear). Used from the live scan screen for
+  /// students whose printed QR won't scan, or who didn't return the paper.
+  Future<void> setAttendanceFlag({
+    required String sheetId,
+    required String studentId,
+    required String flag,
+  }) async {
+    final db = await database;
+    await db.update(
+      'exam_attendance_records',
+      {'status': 'present', 'flag': flag, 'marked_at': DateTime.now().toIso8601String()},
+      where: 'sheet_id = ? AND student_id = ?',
+      whereArgs: [sheetId, studentId],
+    );
   }
 
   /// Prefix of the compressed full-detail hall QR printed on the dedicated
@@ -2073,10 +2525,16 @@ class TeacherDashboardDatabase {
   Future<AttendanceShareData> loadAttendanceShare({
     required String sheetId,
     String classGroup = '',
+    String sharedBy = '',
   }) async {
     final detail = await loadAttendanceSheetDetail(sheetId);
     final ufmCases = await loadUfmCases(sheetId);
-    return _buildAttendanceShare(detail, ufmCases, classGroup: classGroup);
+    return _buildAttendanceShare(
+      detail,
+      ufmCases,
+      classGroup: classGroup,
+      sharedBy: sharedBy,
+    );
   }
 
   /// Logs a share (per scope) in shared_attendance_sheets so it shows under
@@ -2086,11 +2544,17 @@ class TeacherDashboardDatabase {
     required String sheetId,
     required String sharedWith,
     String classGroup = '',
+    String sharedBy = '',
   }) async {
     final db = await database;
     final detail = await loadAttendanceSheetDetail(sheetId);
     final ufmCases = await loadUfmCases(sheetId);
-    final share = _buildAttendanceShare(detail, ufmCases, classGroup: classGroup);
+    final share = _buildAttendanceShare(
+      detail,
+      ufmCases,
+      classGroup: classGroup,
+      sharedBy: sharedBy,
+    );
     final id = 'SHR${DateTime.now().microsecondsSinceEpoch}';
     await db.insert('shared_attendance_sheets', {
       'id': id,
@@ -2170,6 +2634,7 @@ class TeacherDashboardDatabase {
       title: 'Attendance accepted',
       message: '$courseName — $hall ($mergedPresent present merged)',
     );
+    onExamDataChanged?.call();
     return AcceptedAttendanceSheetSummary(
       id: id,
       courseName: courseName,
@@ -2178,6 +2643,112 @@ class TeacherDashboardDatabase {
       receivedFrom: by.isEmpty ? 'Another device' : by,
       acceptedAt: DateTime.now(),
       status: statusLabel,
+    );
+  }
+
+  /// Imports a whole `attendance_export` .txt (the same file csexam reads),
+  /// received from ANOTHER phone. Every session merges into this teacher's
+  /// Saved Stats — find-or-create per hall + date + shift, present always wins,
+  /// UFM cases added, student names preserved. Returns a short summary.
+  Future<AttendanceImportSummary> importAttendanceExport({
+    required String teacherId,
+    required String jsonText,
+  }) async {
+    final decoded = jsonDecode(jsonText.trim());
+    if (decoded is! Map || decoded['type'] != 'attendance_export') {
+      throw const FormatException(
+        'Not an AUST attendance file. On the other phone use Exam Attendance '
+        '→ Export for csexam → Share file, then open that .txt here.',
+      );
+    }
+    final sessionsRaw = decoded['sessions'];
+    if (sessionsRaw is! List || sessionsRaw.isEmpty) {
+      throw const FormatException('The file has no attendance sessions.');
+    }
+    final db = await database;
+    var halls = 0, present = 0, absent = 0, ufmCount = 0;
+    for (final raw in sessionsRaw) {
+      if (raw is! Map) continue;
+      final hall = (raw['hall'] ?? '').toString().trim();
+      final dateIso = (raw['dateIso'] ?? '').toString();
+      final date = (raw['date'] ?? '').toString();
+      final shift = (raw['shift'] ?? '').toString();
+      final examIso =
+          DateTime.tryParse(dateIso)?.toIso8601String() ??
+          _parseExamDate(date, shift).toIso8601String();
+      final students = (raw['students'] is List)
+          ? raw['students'] as List
+          : const [];
+      final ufm = (raw['ufm'] is List) ? raw['ufm'] as List : const [];
+
+      final sheetId = await _findOrCreateReceiverSheet(
+        db,
+        teacherId: teacherId,
+        hall: hall.isEmpty ? 'Exam Hall' : hall,
+        examIso: examIso,
+        expected: students.length,
+      );
+
+      // Preserve real names: insert (ignore) then fill blank / roll-only names.
+      for (final st in students) {
+        if (st is! Map) continue;
+        final roll = (st['roll'] ?? '').toString().trim();
+        if (roll.isEmpty) continue;
+        final name = (st['name'] ?? '').toString().trim();
+        final id = 'STU$roll';
+        await db.insert('students', {
+          'id': id,
+          'name': name.isEmpty ? roll : name,
+          'roll_no': roll,
+          'program': '',
+          'session': '',
+          'semester': '',
+          'section': '',
+          'email': '',
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        if (name.isNotEmpty && name != roll) {
+          await db.update(
+            'students',
+            {'name': name},
+            where: "id = ? AND (name = '' OR name = roll_no)",
+            whereArgs: [id],
+          );
+        }
+      }
+
+      // Reuse the QR-merge engine: build its [st]/[u] shape (present wins).
+      final st = <List<Object?>>[
+        for (final s in students)
+          if (s is Map)
+            [
+              (s['roll'] ?? '').toString(),
+              (s['status'] ?? '').toString().toLowerCase() == 'present'
+                  ? 'P'
+                  : 'A',
+              (s['seat'] ?? '').toString(),
+              (s['class'] ?? '').toString(),
+              (s['flag'] ?? '').toString(),
+            ],
+      ];
+      final u = <List<Object?>>[
+        for (final c in ufm)
+          if (c is Map)
+            [
+              (c['roll'] ?? '').toString(),
+              (c['allegation'] ?? '').toString(),
+              (c['details'] ?? '').toString(),
+            ],
+      ];
+      present += await _mergeTransferStudents(db, sheetId, {'st': st, 'u': u});
+      absent += st.where((r) => r[1] == 'A').length;
+      ufmCount += u.length;
+      halls += 1;
+    }
+    return AttendanceImportSummary(
+      sessions: halls,
+      present: present,
+      absent: absent,
+      ufm: ufmCount,
     );
   }
 
@@ -2191,6 +2762,13 @@ class TeacherDashboardDatabase {
     required String examIso,
     required int expected,
   }) async {
+    // Match by hall + DATE + SHIFT (morning vs afternoon) so the 1st-shift and
+    // 2nd-shift sittings of the same hall on the same day stay SEPARATE
+    // entries, while two invigilators of the SAME hall+shift merge into one.
+    final afternoon =
+        DateTime.tryParse(examIso) != null && DateTime.parse(examIso).hour >= 12
+        ? 1
+        : 0;
     final existing = await db.rawQuery(
       '''
       SELECT sh.id AS id
@@ -2199,10 +2777,12 @@ class TeacherDashboardDatabase {
       WHERE sh.teacher_id = ?
         AND UPPER(h.name) = UPPER(?)
         AND date(sh.exam_date_time) = date(?)
+        AND (CASE WHEN cast(strftime('%H', sh.exam_date_time) AS INTEGER) >= 12
+                  THEN 1 ELSE 0 END) = ?
       ORDER BY sh.last_updated_at DESC
       LIMIT 1
       ''',
-      [teacherId, hall, examIso],
+      [teacherId, hall, examIso, afternoon],
     );
     if (existing.isNotEmpty) {
       return existing.first['id'].toString();
@@ -2268,6 +2848,7 @@ class TeacherDashboardDatabase {
         final isPresent = row.length > 1 && row[1].toString() == 'P';
         final seat = row.length > 2 ? row[2].toString() : '';
         final cls = row.length > 3 ? row[3].toString() : '';
+        final flag = row.length > 4 ? row[4].toString() : '';
         final colChair = _parseSeatColChair(seat);
         if (isPresent) present += 1;
         final studentId = 'STU$roll';
@@ -2299,6 +2880,7 @@ class TeacherDashboardDatabase {
             'col_no': colChair.$1,
             'chair_no': colChair.$2,
             'class_group': cls,
+            'flag': flag,
           }, conflictAlgorithm: ConflictAlgorithm.ignore);
         } else if (isPresent && existing.first['status'].toString() != 'present') {
           // Upgrade to present (never downgrade an existing present mark).
@@ -2311,6 +2893,7 @@ class TeacherDashboardDatabase {
               if (colChair.$1 > 0) 'col_no': colChair.$1,
               if (colChair.$2 > 0) 'chair_no': colChair.$2,
               if (cls.isNotEmpty) 'class_group': cls,
+              if (flag.isNotEmpty) 'flag': flag,
             },
             where: 'sheet_id = ? AND student_id = ?',
             whereArgs: [sheetId, studentId],
@@ -2454,6 +3037,7 @@ class TeacherDashboardDatabase {
     ExamAttendanceSheetDetail detail,
     List<UfmCase> ufmCases, {
     String classGroup = '',
+    String sharedBy = '',
   }) {
     final stats = detail.stats;
     final scope = classGroup.trim();
@@ -2473,6 +3057,12 @@ class TeacherDashboardDatabase {
         .toList(growable: false);
     final absent = students
         .where((student) => student.status != 'present')
+        .toList(growable: false);
+    final qrProblem = present
+        .where((s) => s.flag == 'qr_problem')
+        .toList(growable: false);
+    final paperNotReturned = present
+        .where((s) => s.flag == 'paper_not_returned')
         .toList(growable: false);
 
     // Scope total: the class's seat count when scoped, else the hall total.
@@ -2497,6 +3087,7 @@ class TeacherDashboardDatabase {
 
     final percent = total == 0 ? 0.0 : present.length / total * 100;
     final lines = <String>[
+      if (sharedBy.trim().isNotEmpty) 'Shared by: ${sharedBy.trim()}',
       'Course: ${stats.courseName}',
       'Scope: $scopeLabel',
       'Exam hall: ${stats.hallName}',
@@ -2522,6 +3113,16 @@ class TeacherDashboardDatabase {
               '- ${c.rollNo}  ${c.studentName} — ${c.allegation}'
               '${c.details.isEmpty ? '' : ' (${c.details})'}',
         ),
+      if (qrProblem.isNotEmpty) ...[
+        '',
+        'QR PROBLEM — present, could not scan (${qrProblem.length}):',
+        ...qrProblem.map(studentLine),
+      ],
+      if (paperNotReturned.isNotEmpty) ...[
+        '',
+        'PAPER NOT RETURNED — present (${paperNotReturned.length}):',
+        ...paperNotReturned.map(studentLine),
+      ],
     ];
 
     final qrPayload = _encodeAttendanceQr(
@@ -2530,6 +3131,7 @@ class TeacherDashboardDatabase {
       total: total,
       students: students,
       cases: cases,
+      sharedBy: sharedBy,
     );
 
     return AttendanceShareData(
@@ -2551,6 +3153,7 @@ class TeacherDashboardDatabase {
     required int total,
     required List<ExamAttendanceStudent> students,
     required List<UfmCase> cases,
+    String sharedBy = '',
   }) {
     final body = <String, Object?>{
       'h': stats.hallName,
@@ -2558,6 +3161,8 @@ class TeacherDashboardDatabase {
       's': stats.seatInfo,
       'c': classGroup,
       'n': total,
+      // Who shared it (invigilator name) so the receiver keeps a source log.
+      if (sharedBy.trim().isNotEmpty) 'by': sharedBy.trim(),
       'st': [
         for (final s in students)
           [
@@ -2565,6 +3170,7 @@ class TeacherDashboardDatabase {
             s.status == 'present' ? 'P' : 'A',
             s.seatLabel,
             s.classGroup,
+            s.flag,
           ],
       ],
       'u': [

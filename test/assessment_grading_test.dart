@@ -50,49 +50,51 @@ void main() {
   }
 
   AssessmentStudent student() => const AssessmentStudent(
-        id: 'BSCS-1',
-        name: 'Test Student',
-        studentId: 'BSCS-1',
-        program: 'BSCS',
-        session: 'S26',
-        semester: '4',
-        section: 'A',
-        email: 'x@y.z',
+    id: 'BSCS-1',
+    name: 'Test Student',
+    studentId: 'BSCS-1',
+    program: 'BSCS',
+    session: 'S26',
+    semester: '4',
+    section: 'A',
+    email: 'x@y.z',
+  );
+
+  test(
+    'submit does not grade; teacher computes objective marks at their end',
+    () {
+      final repo = AppRepository();
+      // The teacher's authoritative copy holds the answer key.
+      final quiz = repo.importSharedAssessment(
+        quizWith(correctA: 'B', correctB: 'C'),
       );
 
-  test('submit does not grade; teacher computes objective marks at their end',
-      () {
-    final repo = AppRepository();
-    // The teacher's authoritative copy holds the answer key.
-    final quiz = repo.importSharedAssessment(
-      quizWith(correctA: 'B', correctB: 'C'),
-    );
+      repo.submitAssessment(
+        assessment: quiz,
+        student: student(),
+        answers: {'Q1': 'B', 'Q2': 'A'}, // Q1 right (2), Q2 wrong (0)
+        warningCount: 0,
+        flags: const [],
+        status: AttemptStatus.submitted,
+      );
 
-    repo.submitAssessment(
-      assessment: quiz,
-      student: student(),
-      answers: {'Q1': 'B', 'Q2': 'A'}, // Q1 right (2), Q2 wrong (0)
-      warningCount: 0,
-      flags: const [],
-      status: AttemptStatus.submitted,
-    );
+      // Student submit leaves the score ungraded (their device has no key).
+      final sub = repo.submissionsForAssessment(quiz.id).single;
+      expect(sub.marks, isNull);
 
-    // Student submit leaves the score ungraded (their device has no key).
-    final sub = repo.submissionsForAssessment(quiz.id).single;
-    expect(sub.marks, isNull);
+      // Teacher-end calculation against the answer key.
+      final suggested = repo.objectiveAutoMarks(quiz, sub.answers);
+      expect(suggested, 2);
 
-    // Teacher-end calculation against the answer key.
-    final suggested = repo.objectiveAutoMarks(quiz, sub.answers);
-    expect(suggested, 2);
-
-    // Teacher saves the grade.
-    repo.gradeSubmission(
-      assessmentId: quiz.id,
-      studentId: 'BSCS-1',
-      marks: suggested!,
-    );
-    expect(repo.submissionsForAssessment(quiz.id).single.marks, 2);
-  });
+      // Teacher saves the grade.
+      repo.gradeSubmission(
+        assessmentId: quiz.id,
+        studentId: 'BSCS-1',
+        marks: suggested!,
+      );
+      expect(repo.submissionsForAssessment(quiz.id).single.marks, 2);
+    },
+  );
 
   test('answer-safe: a student-facing decoded paper carries no answer key', () {
     final repo = AppRepository();
@@ -114,9 +116,55 @@ void main() {
       ],
     );
     // Grading against the student's answer-free copy yields nothing...
-    expect(repo.objectiveAutoMarks(studentCopy, {'Q1': 'B', 'Q2': 'C'}), isNull);
+    expect(
+      repo.objectiveAutoMarks(studentCopy, {'Q1': 'B', 'Q2': 'C'}),
+      isNull,
+    );
     // ...but the teacher's authoritative copy still grades correctly.
     expect(repo.objectiveAutoMarks(quiz, {'Q1': 'B', 'Q2': 'C'}), 5);
+  });
+
+  test('per-option partial credit grades by the option the student picked', () {
+    final repo = AppRepository();
+    final now = DateTime(2026, 5, 30, 10);
+    final paper = Assessment(
+      id: 'POPT-1',
+      title: 'Partial credit quiz',
+      type: AssessmentType.quiz,
+      courseId: 'C1',
+      program: 'BSCS',
+      semester: '4',
+      section: 'A',
+      durationMinutes: 20,
+      totalMarks: 10,
+      startTime: now,
+      endTime: now.add(const Duration(minutes: 20)),
+      instructions: '',
+      questions: const [
+        AssessmentQuestion(
+          id: 'Q1',
+          type: QuestionType.mcq,
+          question: 'Q1?',
+          marks: 10,
+          options: ['A', 'B', 'C', 'D', 'E'],
+          optionMarks: {'A': 10, 'B': 8, 'C': 6, 'D': 4, 'E': 2},
+        ),
+      ],
+      settings: const AssessmentSettings(
+        randomizeQuestions: false,
+        randomizeOptions: false,
+        oneAttemptOnly: true,
+        autoSubmit: true,
+        showResultAfterSubmission: true,
+        manualGrading: false,
+      ),
+      status: AssessmentStatus.active,
+      qrCode: 'ASSESS_POPT1',
+    );
+    expect(repo.objectiveAutoMarks(paper, {'Q1': 'A'}), 10);
+    expect(repo.objectiveAutoMarks(paper, {'Q1': 'C'}), 6);
+    expect(repo.objectiveAutoMarks(paper, {'Q1': 'E'}), 2);
+    expect(repo.objectiveAutoMarks(paper, const {}), 0); // blank → 0
   });
 
   test('assignment with no correct answers stays ungraded (manual)', () {
@@ -145,5 +193,28 @@ void main() {
     );
     final regraded = repo.submissionsForAssessment(assignment.id).single;
     expect(regraded.marks, 4);
+  });
+
+  test('teacher import auto-grades objective QR submissions', () {
+    final repo = AppRepository();
+    final quiz = repo.importSharedAssessment(
+      quizWith(correctA: 'B', correctB: 'C'),
+    );
+    final imported = repo.importSubmission(
+      AssessmentSubmission(
+        id: 'QR-1',
+        assessmentId: quiz.id,
+        studentId: 'BSCS-1',
+        status: AttemptStatus.submitted,
+        answers: const {'Q1': 'B', 'Q2': 'C'},
+        warningCount: 0,
+        flags: const [],
+        progress: 100,
+        submittedAt: DateTime(2026, 5, 30, 10, 15),
+      ),
+    );
+
+    expect(imported.marks, 5);
+    expect(repo.submissionsForAssessment(quiz.id).single.marks, 5);
   });
 }

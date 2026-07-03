@@ -63,7 +63,7 @@ class _AppearanceSheet extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Pick a theme color and light / dark mode.',
+                  'Pick a theme color.',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
@@ -83,22 +83,6 @@ class _AppearanceSheet extends StatelessWidget {
                       ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                const _Label('MODE'),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final mode in ThemeMode.values)
-                      ChoiceChip(
-                        selected: controller.mode == mode,
-                        label: Text(_modeLabel(mode)),
-                        avatar: Icon(_modeIcon(mode), size: 18),
-                        onSelected: (_) => controller.setMode(mode),
-                      ),
-                  ],
-                ),
               ],
             ),
           ),
@@ -107,27 +91,6 @@ class _AppearanceSheet extends StatelessWidget {
     );
   }
 
-  static String _modeLabel(ThemeMode mode) {
-    switch (mode) {
-      case ThemeMode.system:
-        return 'System';
-      case ThemeMode.light:
-        return 'Light';
-      case ThemeMode.dark:
-        return 'Dark';
-    }
-  }
-
-  static IconData _modeIcon(ThemeMode mode) {
-    switch (mode) {
-      case ThemeMode.system:
-        return Icons.brightness_auto_outlined;
-      case ThemeMode.light:
-        return Icons.light_mode_outlined;
-      case ThemeMode.dark:
-        return Icons.dark_mode_outlined;
-    }
-  }
 }
 
 class _Label extends StatelessWidget {

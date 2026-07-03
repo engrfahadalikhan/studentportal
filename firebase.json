@@ -1,1 +1,24 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"fahad1-bbd65","appId":"1:348949617917:android:d49f1dd988c2a91f74f294","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"fahad1-bbd65","configurations":{"android":"1:348949617917:android:d49f1dd988c2a91f74f294"}}}}}}
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "studentportal-36d0a",
+          "appId": "1:989039234:android:29e44d067bb041cce5c29b",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "studentportal-36d0a",
+          "configurations": {
+            "android": "1:989039234:android:29e44d067bb041cce5c29b"
+          }
+        }
+      }
+    }
+  }
+}

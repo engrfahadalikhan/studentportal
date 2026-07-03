@@ -305,12 +305,18 @@ class ExamAttendanceStudent {
     this.colNo = 0,
     this.chairNo = 0,
     this.classGroup = '',
+    this.flag = '',
   });
 
   final String studentId;
   final String studentName;
   final String rollNo;
   final String status;
+
+  /// Extra note on a PRESENT student: '' (none), 'qr_problem' (the printed QR
+  /// wouldn't scan, marked present by hand) or 'paper_not_returned' (present
+  /// but did not hand back the question paper).
+  final String flag;
 
   /// Real seat from the seating plan (e.g. "Hall G10 | Col 4 | Chair 7").
   /// Empty when the sheet was built from course enrollment instead of a
@@ -325,7 +331,7 @@ class ExamAttendanceStudent {
 
   bool get hasSeat => colNo > 0 && chairNo > 0;
 
-  ExamAttendanceStudent copyWith({String? status}) {
+  ExamAttendanceStudent copyWith({String? status, String? flag}) {
     return ExamAttendanceStudent(
       studentId: studentId,
       studentName: studentName,
@@ -335,7 +341,20 @@ class ExamAttendanceStudent {
       colNo: colNo,
       chairNo: chairNo,
       classGroup: classGroup,
+      flag: flag ?? this.flag,
     );
+  }
+
+  /// Short human label for the flag (empty when none).
+  String get flagLabel {
+    switch (flag) {
+      case 'qr_problem':
+        return 'QR problem';
+      case 'paper_not_returned':
+        return 'Paper not returned';
+      default:
+        return '';
+    }
   }
 }
 
@@ -493,4 +512,78 @@ class AttendanceSharingData {
 
   final List<SharedAttendanceSheetSummary> sharedSheets;
   final List<AcceptedAttendanceSheetSummary> acceptedSheets;
+}
+
+/// One attendance record flattened for the end-of-exam summary (slot / program
+/// / hall drill-down). Sourced from every sheet the teacher holds — their own
+/// scans plus everything accepted/merged from other invigilators.
+class AttendanceSummaryRow {
+  const AttendanceSummaryRow({
+    required this.dateTime,
+    required this.hall,
+    required this.program,
+    required this.status,
+    required this.flag,
+    required this.rollNo,
+    required this.studentName,
+    this.collectedBy = '',
+  });
+
+  final DateTime dateTime;
+  final String hall;
+  final String program;
+  final String status; // 'present' | 'absent'
+  final String flag; // '' | 'qr_problem' | 'paper_not_returned'
+  final String rollNo;
+  final String studentName;
+
+  /// Name of the teacher/invigilator who scanned this student.
+  final String collectedBy;
+
+  bool get isPresent => status == 'present';
+
+  /// Slot label: 1st shift (morning) vs 2nd shift (afternoon).
+  String get shift => dateTime.hour >= 12 ? '2nd' : '1st';
+}
+
+/// One unfair-means case, with enough context for a teacher-wide UFM report.
+class UfmSummaryRow {
+  const UfmSummaryRow({
+    required this.dateTime,
+    required this.hall,
+    required this.program,
+    required this.rollNo,
+    required this.studentName,
+    required this.allegation,
+    required this.details,
+    this.collectedBy = '',
+  });
+
+  final DateTime dateTime;
+  final String hall;
+  final String program;
+  final String rollNo;
+  final String studentName;
+  final String allegation;
+  final String details;
+
+  /// Name of the invigilator who recorded this UFM case.
+  final String collectedBy;
+
+  String get shift => dateTime.hour >= 12 ? '2nd' : '1st';
+}
+
+/// Result of importing an `attendance_export` file from another phone.
+class AttendanceImportSummary {
+  const AttendanceImportSummary({
+    required this.sessions,
+    required this.present,
+    required this.absent,
+    required this.ufm,
+  });
+
+  final int sessions;
+  final int present;
+  final int absent;
+  final int ufm;
 }

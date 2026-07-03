@@ -63,6 +63,33 @@ class LocalStudentEnrollmentStore {
         .toList(growable: false);
   }
 
+  Future<List<StudentRecord>> classmatesFor(StudentRecord student) async {
+    String n(String value) => value.trim().toLowerCase();
+
+    final groupedRows = <String, List<Map<String, dynamic>>>{};
+    for (final row in localStudentEnrollmentRows) {
+      final rollNo = row[_rollNoIndex].trim();
+      if (rollNo.isEmpty) continue;
+      groupedRows
+          .putIfAbsent(rollNo, () => <Map<String, dynamic>>[])
+          .add(_toStudentRow(row));
+    }
+
+    final records = groupedRows.values
+        .map(StudentRecord.fromRows)
+        .where((record) {
+          return n(record.program) == n(student.program) &&
+              n(record.semester) == n(student.semester) &&
+              n(record.section) == n(student.section);
+        })
+        .toList(growable: false);
+
+    records.sort(
+      (a, b) => a.rollNo.toLowerCase().compareTo(b.rollNo.toLowerCase()),
+    );
+    return records;
+  }
+
   List<Map<String, dynamic>> _rowsForRollNo(String rollNo) {
     return localStudentEnrollmentRows
         .where((row) => row[_rollNoIndex].trim() == rollNo)

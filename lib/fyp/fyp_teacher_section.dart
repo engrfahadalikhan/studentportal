@@ -3,8 +3,11 @@ import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
 
 import '../assessment/assessment_models.dart';
+import '../assessment/registration_course_data.dart' as registration;
+import '../services/login_store.dart';
 import '../ui/student_portal_shell.dart';
 import 'fyp_allocation_pdf.dart';
+import 'fyp_groups_tabs.dart';
 import 'fyp_consent_pdf.dart';
 import 'fyp_evaluation_pdf.dart';
 import 'fyp_idea_pdf.dart';
@@ -37,7 +40,19 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 6, vsync: this);
+  }
+
+  /// Every known teacher name (registration seed + custom logins + me) for
+  /// the supervisor / coordinator / examiner dropdowns.
+  List<String> _allTeacherNames() {
+    final names = <String>{
+      for (final t in registration.registrationTeachers) t.name,
+      for (final c in LoginStore.instance.customTeachers()) c.name,
+      widget.teacher.name,
+    }..removeWhere((e) => e.trim().isEmpty);
+    final list = names.toList()..sort();
+    return list;
   }
 
   @override
@@ -63,6 +78,7 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
               unselectedLabelColor: PortalColors.subtleText,
               indicatorColor: PortalColors.brandBlue,
               tabs: const [
+                Tab(text: 'Groups'),
                 Tab(text: 'My Ideas'),
                 Tab(text: 'Allocations'),
                 Tab(text: 'Meeting Logs'),
@@ -74,6 +90,10 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
           body: TabBarView(
             controller: _tabController,
             children: [
+              FypTeacherGroupsTab(
+                teacherName: widget.teacher.name,
+                teacherNames: _allTeacherNames(),
+              ),
               _MyIdeasTab(teacher: widget.teacher, repo: _repo),
               _AllocationsReviewTab(teacher: widget.teacher, repo: _repo),
               _MeetingLogsReviewTab(teacher: widget.teacher, repo: _repo),

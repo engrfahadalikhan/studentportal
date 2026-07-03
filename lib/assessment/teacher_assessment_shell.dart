@@ -12,7 +12,17 @@ import '../fyp/fyp_teacher_section.dart';
 import '../models/app_role.dart';
 import '../modules/module_router.dart';
 import '../modules/modules_common.dart';
+import '../features/admin_data_sync_page.dart';
+import '../features/answer_sheet_tracker_page.dart';
+import '../features/change_password_page.dart';
+import '../features/end_summary_page.dart';
+import '../features/local_exam_host_page.dart';
+import '../features/quiz_results_export.dart';
+import '../features/slot_collection_page.dart';
 import '../services/app_repository.dart';
+import '../services/assessment_access_service.dart';
+import '../services/paper_tracker_access_service.dart';
+import '../services/slot_collection_access_service.dart';
 import '../services/teacher_dashboard_database.dart';
 import '../ui/student_portal_shell.dart';
 import 'assessment_models.dart';
@@ -41,6 +51,7 @@ enum _TeacherSection {
   attendanceSheets,
   attendanceHistory,
   exportRecord,
+  importRecord,
   shareAttendance,
   attendanceSharing,
   builder,
@@ -49,6 +60,7 @@ enum _TeacherSection {
   live,
   results,
   scanSubmission,
+  marksLists,
   fyp,
 }
 
@@ -68,6 +80,7 @@ class TeacherAssessmentShell extends StatefulWidget {
 
 class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
   _TeacherSection _section = _TeacherSection.dashboard;
+  final List<_TeacherSection> _sectionHistory = [];
   AssessmentCourse? _selectedCourse;
   Assessment? _selectedAssessment;
   late final TeacherDashboardDatabase _dashboardDatabase;
@@ -106,6 +119,9 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
       animation: Listenable.merge([
         widget.repository,
         FeatureVisibilityService.instance,
+        AssessmentAccessService.instance,
+        PaperTrackerAccessService.instance,
+        SlotCollectionAccessService.instance,
       ]),
       builder: (context, _) {
         final courses = widget.repository.coursesForTeacher(widget.teacher);
@@ -122,20 +138,31 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           builder: (context, snapshot) {
             final home = snapshot.data;
 
-            return Scaffold(
-              backgroundColor: PortalColors.pageBackground,
-              bottomNavigationBar: _TeacherBottomNav(
-                section: _section,
-                onChanged: _go,
-                onLogout: _confirmLogout,
-              ),
-              body: SafeArea(
-                child: _buildSection(
-                  courses,
-                  assessments,
-                  home,
-                  snapshot.connectionState,
-                  snapshot.error,
+            return PopScope(
+              canPop:
+                  _section == _TeacherSection.dashboard &&
+                  _sectionHistory.isEmpty,
+              onPopInvokedWithResult: (didPop, result) {
+                if (didPop) return;
+                _handleSystemBack();
+              },
+              child: Scaffold(
+                backgroundColor: PortalColors.pageBackground,
+                bottomNavigationBar: _TeacherBottomNav(
+                  section: _section,
+                  onChanged: _go,
+                  onLogout: _confirmLogout,
+                  canCreateAssessments: AssessmentAccessService.instance
+                      .isAllowed(widget.teacher.id),
+                ),
+                body: SafeArea(
+                  child: _buildSection(
+                    courses,
+                    assessments,
+                    home,
+                    snapshot.connectionState,
+                    snapshot.error,
+                  ),
                 ),
               ),
             );
@@ -166,6 +193,30 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           onOpenNotifications: _openNotifications,
           onOpenExamAttendance: _openExamAttendance,
           onOpenFyp: () => _go(_TeacherSection.fyp),
+          onChangePassword: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ChangePasswordPage(repository: widget.repository),
+            ),
+          ),
+          onMarksLists: () => _go(_TeacherSection.marksLists),
+          onAnswerSheets:
+              PaperTrackerAccessService.instance.isAllowed(widget.teacher.id)
+              ? () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AnswerSheetTrackerPage(),
+                  ),
+                )
+              : null,
+          // Per-Slot Collection + Data Share are open to all teachers (they are
+          // the invigilators who collect and hand over the data).
+          onSlotCollection: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const SlotCollectionPage()),
+          ),
+          onDataShare: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => AdminDataSyncPage(repository: widget.repository),
+            ),
+          ),
           trailing: _TeacherModulesPanel(
             repository: widget.repository,
             teacher: widget.teacher,
@@ -188,7 +239,7 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           );
         }
         return FutureBuilder<TeacherCourseDetailData>(
-          future: _dashboardDatabase.loadCourseDetail(courseId),
+          future: _loadMergedCourseDetail(courseId),
           builder: (context, snapshot) {
             if (snapshot.hasError) {
               return _DatabaseMessage(message: snapshot.error.toString());
@@ -205,6 +256,13 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           },
         );
       case _TeacherSection.newAssessment:
+        if (!AssessmentAccessService.instance.isAllowed(widget.teacher.id)) {
+          return const _DatabaseMessage(
+            message:
+                'Assessment creation is not enabled for your account.\n'
+                'Ask the admin to allow it (Admin → Assessment Access).',
+          );
+        }
         final courseId = _selectedDbCourseId;
         final course = courseId == null ? null : home?.courseById(courseId);
         if (course == null) {
@@ -220,6 +278,7 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           teacher: widget.teacher,
           initialCourseId: _resolveInitialCourseId(course.id),
           onAssessmentCreated: (assessment) {
+            _reloadTeacherHome();
             setState(() {
               _selectedAssessment = assessment;
               _section = _TeacherSection.qr;
@@ -287,14 +346,33 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
               onSharingStats: () => _go(_TeacherSection.attendanceSharing),
               onHistory: () => _go(_TeacherSection.attendanceHistory),
               onExport: () => _go(_TeacherSection.exportRecord),
+              onImport: () => _go(_TeacherSection.importRecord),
+              onSummary: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => EndSummaryPage(teacherId: widget.teacher.id),
+                ),
+              ),
             );
           },
         );
       case _TeacherSection.examScan:
-        return ExamQrScanView(
-          onBack: () => _go(_TeacherSection.examAttendance),
-          onQrDetected: _fetchHallStatsFromQr,
-          errorMessage: _qrScanError,
+        return FutureBuilder<List<ExamAttendanceSheetSummary>>(
+          future: _dashboardDatabase.loadAttendanceSheets(widget.teacher.id),
+          builder: (context, snapshot) {
+            return ExamQrScanView(
+              onBack: () => _go(_TeacherSection.examAttendance),
+              onQrDetected: _fetchHallStatsFromQr,
+              errorMessage: _qrScanError,
+              scannedHalls: snapshot.data ?? const [],
+              onResumeHall: (sheet) {
+                setState(() {
+                  _selectedAttendanceSheetId = sheet.sheetId;
+                  _selectedClass = null;
+                });
+                _go(_TeacherSection.hallStats);
+              },
+            );
+          },
         );
       case _TeacherSection.hallStats:
         final hallSheetId = _selectedAttendanceSheetId;
@@ -345,6 +423,7 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
               onLoad: (classGroup) => _dashboardDatabase.loadAttendanceShare(
                 sheetId: shareSheetId,
                 classGroup: classGroup,
+                sharedBy: widget.teacher.name,
               ),
               onRecordShared: (classGroup) async {
                 await _dashboardDatabase.recordAttendanceShare(
@@ -352,6 +431,7 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
                   sheetId: shareSheetId,
                   sharedWith: 'Admin',
                   classGroup: classGroup,
+                  sharedBy: widget.teacher.name,
                 );
                 _reloadTeacherHome();
               },
@@ -442,6 +522,11 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
               sheets: snapshot.data!,
               onBack: () => _go(_TeacherSection.examAttendance),
               onOpenSheet: _openAttendanceHistorySheet,
+              onDelete: (sheet) async {
+                await _dashboardDatabase.deleteAttendanceSheet(sheet.sheetId);
+                _reloadTeacherHome();
+                setState(() {}); // refresh the history FutureBuilder
+              },
             );
           },
         );
@@ -451,6 +536,14 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           buildJson: () => _dashboardDatabase.exportAttendanceJson(
             teacherId: widget.teacher.id,
             exportedBy: widget.teacher.name,
+          ),
+        );
+      case _TeacherSection.importRecord:
+        return ImportRecordView(
+          onBack: () => _go(_TeacherSection.examAttendance),
+          onImport: (jsonText) => _dashboardDatabase.importAttendanceExport(
+            teacherId: widget.teacher.id,
+            jsonText: jsonText,
           ),
         );
       case _TeacherSection.shareAttendance:
@@ -467,6 +560,12 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
               sheets: snapshot.data!,
               onBack: () => _go(_TeacherSection.examAttendance),
               onShare: _shareAttendanceSheet,
+              onLoadShare: (sheetId) => _dashboardDatabase.loadAttendanceShare(
+                sheetId: sheetId,
+                classGroup: '',
+                sharedBy: widget.teacher.name,
+              ),
+              onAccept: () => _go(_TeacherSection.acceptAttendance),
             );
           },
         );
@@ -487,6 +586,13 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           },
         );
       case _TeacherSection.builder:
+        if (!AssessmentAccessService.instance.isAllowed(widget.teacher.id)) {
+          return const _DatabaseMessage(
+            message:
+                'Assessment creation is not enabled for your account.\n'
+                'Ask the admin to allow it (Admin → Assessment Access).',
+          );
+        }
         return _TeacherAssessmentsHub(
           repository: widget.repository,
           teacher: widget.teacher,
@@ -505,6 +611,7 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
           onOpenLive: () => _go(_TeacherSection.live),
           onOpenResults: () => _go(_TeacherSection.results),
           onScanSubmission: () => _go(_TeacherSection.scanSubmission),
+          onDelete: () => _confirmDeleteAssessment(_selectedAssessment),
         );
       case _TeacherSection.attendance:
         return const QrAttendanceSection();
@@ -521,15 +628,71 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
       case _TeacherSection.scanSubmission:
         return _ScanSubmissionScreen(
           repository: widget.repository,
-          onDone: () => _go(_TeacherSection.results),
+          assessment: _selectedAssessment,
+          onDone: () => _go(_TeacherSection.marksLists),
         );
+      case _TeacherSection.marksLists:
+        return _MarksListsScreen(repository: widget.repository);
       case _TeacherSection.fyp:
         return FypTeacherSection(teacher: widget.teacher);
     }
   }
 
+  Future<void> _confirmDeleteAssessment(Assessment? a) async {
+    if (a == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Delete this assessment?'),
+        content: Text(
+          '"${a.title}" and its scanned submissions will be permanently '
+          'removed. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB91C1C),
+            ),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    widget.repository.deleteAssessment(a.id);
+    _reloadTeacherHome();
+    if (mounted) {
+      setState(() {
+        _selectedAssessment = null;
+        _section = _TeacherSection.courses;
+      });
+    }
+  }
+
   void _go(_TeacherSection section) {
-    setState(() => _section = section);
+    if (section == _section) return;
+    setState(() {
+      _sectionHistory.add(_section);
+      _section = section;
+    });
+  }
+
+  /// Handles the Android system back / side-swipe: step back through the
+  /// in-app section history instead of closing the whole app. Only when we are
+  /// already on the dashboard with no history does the app actually exit.
+  void _handleSystemBack() {
+    setState(() {
+      if (_sectionHistory.isNotEmpty) {
+        _section = _sectionHistory.removeLast();
+      } else if (_section != _TeacherSection.dashboard) {
+        _section = _TeacherSection.dashboard;
+      }
+    });
   }
 
   /// Opens the paper generator (as a full route) preset to [type]. On save the
@@ -597,9 +760,94 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
   }
 
   void _reloadTeacherHome() {
-    _teacherHomeFuture = _dashboardDatabase.loadTeacherHome(
+    _teacherHomeFuture = _loadMergedHome();
+  }
+
+  /// The course list / counts come from the sqflite dashboard DB, but the
+  /// quizzes a teacher BUILDS live in AppRepository. Merge the AppRepository
+  /// assessment counts into each course so created papers actually show up.
+  Future<TeacherDashboardHomeData> _loadMergedHome() async {
+    final base = await _dashboardDatabase.loadTeacherHome(
       teacherId: widget.teacher.id,
       teacherName: widget.teacher.name,
+    );
+    final mergedCourses = base.courses.map((c) {
+      final repoCount = _repoAssessmentsForDashboardCourse(c.id).length;
+      if (repoCount == 0) return c;
+      return TeacherCourseSummary(
+        id: c.id,
+        teacherId: c.teacherId,
+        courseName: c.courseName,
+        courseCode: c.courseCode,
+        totalStudents: c.totalStudents,
+        totalAssessments: c.totalAssessments + repoCount,
+        program: c.program,
+        semester: c.semester,
+        section: c.section,
+      );
+    }).toList();
+    return TeacherDashboardHomeData(
+      teacherId: base.teacherId,
+      teacherName: base.teacherName,
+      courses: mergedCourses,
+      unreadNotifications: base.unreadNotifications,
+      attendanceSheets: base.attendanceSheets,
+      sharedAttendanceSheets: base.sharedAttendanceSheets,
+      acceptedAttendanceSheets: base.acceptedAttendanceSheets,
+    );
+  }
+
+  List<Assessment> _repoAssessmentsForDashboardCourse(String dashboardCourseId) {
+    final repoCourseId = _resolveInitialCourseId(dashboardCourseId);
+    if (repoCourseId == null) return const [];
+    return widget.repository.assessmentsForCourse(repoCourseId);
+  }
+
+  /// AppRepository assessments for a dashboard course, as the dashboard's own
+  /// summary type, so they render alongside any DB ones in the course detail.
+  List<CourseAssessmentSummary> _repoAssessmentSummaries(
+    String dashboardCourseId,
+    Set<String> existingIds,
+  ) {
+    final out = <CourseAssessmentSummary>[];
+    for (final a in _repoAssessmentsForDashboardCourse(dashboardCourseId)) {
+      if (existingIds.contains(a.id)) continue;
+      final submitted = widget.repository.submissionsForAssessment(a.id).length;
+      out.add(
+        CourseAssessmentSummary(
+          id: a.id,
+          courseId: dashboardCourseId,
+          title: a.title,
+          type: switch (a.type) {
+            AssessmentType.assignment => TeacherAssessmentKind.assignment,
+            AssessmentType.quiz => TeacherAssessmentKind.quiz,
+            AssessmentType.examPaper => TeacherAssessmentKind.others,
+          },
+          totalMarks: a.totalMarks,
+          dueDate: a.endTime,
+          instructions: a.instructions,
+          submittedCount: submitted,
+          notSubmittedCount: a.expectedStudents > submitted
+              ? a.expectedStudents - submitted
+              : 0,
+        ),
+      );
+    }
+    return out;
+  }
+
+  Future<TeacherCourseDetailData> _loadMergedCourseDetail(
+    String dashboardCourseId,
+  ) async {
+    final base = await _dashboardDatabase.loadCourseDetail(dashboardCourseId);
+    final extra = _repoAssessmentSummaries(
+      dashboardCourseId,
+      base.assessments.map((a) => a.id).toSet(),
+    );
+    if (extra.isEmpty) return base;
+    return TeacherCourseDetailData(
+      course: base.course,
+      assessments: [...extra, ...base.assessments],
     );
   }
 
@@ -612,6 +860,16 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
   }
 
   void _openDbAssessment(CourseAssessmentSummary assessment) {
+    // A teacher-built paper lives in AppRepository — open its QR/scan screen
+    // (the dashboard-DB assessment-detail screen would be empty for it).
+    final repoAssessment = widget.repository.assessmentById(assessment.id);
+    if (repoAssessment != null) {
+      setState(() {
+        _selectedAssessment = repoAssessment;
+        _section = _TeacherSection.qr;
+      });
+      return;
+    }
     setState(() {
       _selectedDbCourseId = assessment.courseId;
       _selectedDbAssessmentId = assessment.id;
@@ -666,7 +924,9 @@ class _TeacherAssessmentShellState extends State<TeacherAssessmentShell> {
         return;
       }
       setState(() {
-        _qrScanError = error.message.isEmpty ? 'Invalid QR code.' : error.message;
+        _qrScanError = error.message.isEmpty
+            ? 'Invalid QR code.'
+            : error.message;
         _section = _TeacherSection.examScan;
       });
     } on StateError catch (error) {
@@ -827,11 +1087,15 @@ class _TeacherBottomNav extends StatelessWidget {
     required this.section,
     required this.onChanged,
     required this.onLogout,
+    required this.canCreateAssessments,
   });
 
   final _TeacherSection section;
   final ValueChanged<_TeacherSection> onChanged;
   final VoidCallback onLogout;
+
+  /// Per-teacher permission (set by the admin) to build assessments.
+  final bool canCreateAssessments;
 
   @override
   Widget build(BuildContext context) {
@@ -899,7 +1163,9 @@ class _TeacherBottomNav extends StatelessWidget {
     final visibleItems = items.where((item) {
       switch (item.section) {
         case _TeacherSection.builder:
-          return service.isVisible(AppRole.faculty, FeatureKey.teacherAssess);
+          // Per-teacher: only teachers the admin explicitly allowed can build
+          // assessments (set in admin → Assessment Access).
+          return canCreateAssessments;
         case _TeacherSection.live:
           return service.isVisible(AppRole.faculty, FeatureKey.teacherLive);
         case _TeacherSection.results:
@@ -937,9 +1203,7 @@ class _TeacherBottomNav extends StatelessWidget {
                 duration: const Duration(milliseconds: 180),
                 padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
                 decoration: BoxDecoration(
-                  color: selected
-                      ? PortalColors.softBlue
-                      : Colors.transparent,
+                  color: selected ? PortalColors.softBlue : Colors.transparent,
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Column(
@@ -1006,6 +1270,7 @@ class _TeacherBottomNav extends StatelessWidget {
             current == _TeacherSection.attendanceSheets ||
             current == _TeacherSection.attendanceHistory ||
             current == _TeacherSection.exportRecord ||
+            current == _TeacherSection.importRecord ||
             current == _TeacherSection.shareAttendance ||
             current == _TeacherSection.attendanceSharing ||
             current == _TeacherSection.attendance;
@@ -1027,9 +1292,11 @@ class _TeacherBottomNav extends StatelessWidget {
       case _TeacherSection.attendanceSheets:
       case _TeacherSection.attendanceHistory:
       case _TeacherSection.exportRecord:
+      case _TeacherSection.importRecord:
       case _TeacherSection.shareAttendance:
       case _TeacherSection.attendanceSharing:
       case _TeacherSection.attendance:
+      case _TeacherSection.marksLists:
       case _TeacherSection.fyp:
         return false;
     }
@@ -1043,6 +1310,7 @@ class _QrShareScreen extends StatelessWidget {
     required this.onOpenLive,
     required this.onOpenResults,
     required this.onScanSubmission,
+    required this.onDelete,
   });
 
   final Assessment? assessment;
@@ -1050,6 +1318,7 @@ class _QrShareScreen extends StatelessWidget {
   final VoidCallback onOpenLive;
   final VoidCallback onOpenResults;
   final VoidCallback onScanSubmission;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -1082,27 +1351,52 @@ class _QrShareScreen extends StatelessWidget {
                   icon: const Icon(Icons.play_circle_outline),
                   label: const Text('Make Live'),
                 ),
-              if (FeatureVisibilityService.instance
-                  .isVisible(AppRole.faculty, FeatureKey.teacherResults))
+              if (FeatureVisibilityService.instance.isVisible(
+                AppRole.faculty,
+                FeatureKey.teacherResults,
+              ))
                 OutlinedButton.icon(
                   onPressed: onOpenResults,
                   icon: const Icon(Icons.grade_outlined),
                   label: const Text('Results'),
                 ),
-              if (FeatureVisibilityService.instance
-                  .isVisible(AppRole.faculty, FeatureKey.teacherLive))
+              if (FeatureVisibilityService.instance.isVisible(
+                AppRole.faculty,
+                FeatureKey.teacherLive,
+              ))
                 FilledButton.icon(
                   onPressed: onOpenLive,
                   icon: const Icon(Icons.monitor_heart_outlined),
                   label: const Text('Live'),
                 ),
-              if (FeatureVisibilityService.instance
-                  .isVisible(AppRole.faculty, FeatureKey.teacherResults))
-                OutlinedButton.icon(
-                  onPressed: onScanSubmission,
-                  icon: const Icon(Icons.qr_code_scanner_rounded),
-                  label: const Text('Scan submission'),
+              FilledButton.icon(
+                onPressed: onScanSubmission,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF047857),
                 ),
+                icon: const Icon(Icons.qr_code_scanner_rounded),
+                label: const Text('Scan submissions'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => LocalExamHostPage(
+                      assessment: current,
+                      repository: repository,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.wifi_tethering_rounded),
+                label: const Text('Host on WiFi'),
+              ),
+              OutlinedButton.icon(
+                onPressed: onDelete,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFB91C1C),
+                ),
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Delete'),
+              ),
             ],
           ),
           child: _ShareableQrBlock(
@@ -1328,6 +1622,190 @@ class _ResultsScreen extends StatelessWidget {
   }
 }
 
+/// Complete marks lists grouped CLASS-wise (BSCS 2A …) then ASSESSMENT-wise
+/// (Quiz 1, Quiz 2 …). Built from every scanned submission, which now carries
+/// the student's name + program/semester/section.
+class _MarksListsScreen extends StatelessWidget {
+  const _MarksListsScreen({required this.repository});
+
+  final AppRepository repository;
+
+  String _classLabel(AssessmentSubmission s, Assessment? a) {
+    String pick(String sub, String asm) =>
+        sub.trim().isNotEmpty ? sub.trim() : asm.trim();
+    final program = pick(s.studentProgram, a?.program ?? '');
+    final semester = pick(s.studentSemester, a?.semester ?? '');
+    final section = pick(s.studentSection, a?.section ?? '');
+    final label = '$program $semester$section'.trim();
+    return label.isEmpty ? 'Unspecified class' : label;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: repository,
+      builder: (context, _) {
+        // class -> assessmentId -> submissions
+        final byClass = <String, Map<String, List<AssessmentSubmission>>>{};
+        final asmTitle = <String, String>{};
+        final asmObj = <String, Assessment?>{};
+        for (final s in repository.submissions) {
+          final a = repository.assessmentById(s.assessmentId);
+          asmObj[s.assessmentId] = a;
+          asmTitle[s.assessmentId] = (a != null && a.title.isNotEmpty)
+              ? a.title
+              : (s.assessmentTitle.isNotEmpty
+                    ? s.assessmentTitle
+                    : s.assessmentId);
+          byClass
+              .putIfAbsent(_classLabel(s, a), () => {})
+              .putIfAbsent(s.assessmentId, () => [])
+              .add(s);
+        }
+        final classes = byClass.keys.toList()..sort();
+
+        return _TeacherScroll(
+          children: [
+            _HeaderCard(
+              title: 'Marks Lists',
+              subtitle: 'Class-wise and quiz-wise — built from scanned '
+                  'submissions.',
+              icon: Icons.grading_outlined,
+            ),
+            const SizedBox(height: 16),
+            if (classes.isEmpty)
+              _Panel(
+                title: 'No marks yet',
+                child: const _EmptyText(
+                  'Scan students\' submission QRs (Scan submission) to build the '
+                  'class-wise lists here.',
+                ),
+              )
+            else
+              for (final cls in classes) ...[
+                _Panel(
+                  title: cls,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final asmId in byClass[cls]!.keys.toList()..sort())
+                        _assessmentBlock(
+                          asmTitle[asmId] ?? asmId,
+                          asmObj[asmId],
+                          byClass[cls]![asmId]!,
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _assessmentBlock(
+    String title,
+    Assessment? assessment,
+    List<AssessmentSubmission> subs,
+  ) {
+    final rows = [...subs]
+      ..sort((a, b) => a.studentId.toLowerCase().compareTo(
+        b.studentId.toLowerCase(),
+      ));
+    final graded = rows.where((r) => r.marks != null).length;
+    final total = assessment?.totalMarks ?? 0;
+    final expected = assessment?.expectedStudents ?? 0;
+    final absent = expected > rows.length ? expected - rows.length : 0;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8FB),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Submitted ${rows.length}'
+            '${expected > 0 ? ' / $expected  •  Absent $absent' : ''}'
+            '  •  Graded $graded'
+            '${total > 0 ? '  •  Out of $total' : ''}',
+            style: const TextStyle(fontSize: 11.5, color: Color(0xFF64748B)),
+          ),
+          const SizedBox(height: 8),
+          for (var i = 0; i < rows.length; i++) _studentRow(i + 1, rows[i], total),
+        ],
+      ),
+    );
+  }
+
+  Widget _studentRow(int index, AssessmentSubmission s, int totalMarks) {
+    final name = s.studentName.isEmpty ? s.studentId : s.studentName;
+    final marksText = s.marks == null
+        ? 'Not graded'
+        : (totalMarks > 0 ? '${s.marks} / $totalMarks' : '${s.marks}');
+    final auto = s.status == AttemptStatus.autoLocked;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 22,
+            child: Text(
+              '$index',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${s.studentId}  •  $name',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                  ),
+                ),
+                if (auto || s.warningCount > 0)
+                  Text(
+                    auto
+                        ? 'Auto-submitted • ${s.warningCount} warning(s)'
+                        : '${s.warningCount} warning(s)',
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      color: Color(0xFFB45309),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Text(
+            marksText,
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 12.5,
+              color: s.marks == null
+                  ? const Color(0xFF94A3B8)
+                  : const Color(0xFF0F766E),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// One submission row in the Results screen. Tap to open the grading sheet
 /// (review answers, then enter marks). Works for both auto-graded quizzes
 /// (teacher can override) and manually graded assignments.
@@ -1504,10 +1982,7 @@ class _GradeSheetState extends State<_GradeSheet> {
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.grade_outlined,
-                    color: PortalColors.brandBlue,
-                  ),
+                  Icon(Icons.grade_outlined, color: PortalColors.brandBlue),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -2299,10 +2774,18 @@ class _HubItemCard extends StatelessWidget {
 /// receive their answers offline. After a successful scan the submission is
 /// imported into the repository and the teacher lands on the Results screen.
 class _ScanSubmissionScreen extends StatefulWidget {
-  const _ScanSubmissionScreen({required this.repository, required this.onDone});
+  const _ScanSubmissionScreen({
+    required this.repository,
+    required this.onDone,
+    this.assessment,
+  });
 
   final AppRepository repository;
   final VoidCallback onDone;
+
+  /// When set, this scanner belongs to ONE assessment — the header names it and
+  /// submissions for a DIFFERENT assessment are rejected with a clear message.
+  final Assessment? assessment;
 
   @override
   State<_ScanSubmissionScreen> createState() => _ScanSubmissionScreenState();
@@ -2310,30 +2793,135 @@ class _ScanSubmissionScreen extends StatefulWidget {
 
 class _ScanSubmissionScreenState extends State<_ScanSubmissionScreen> {
   MobileScannerController? _ctrl;
-  bool _cameraOpen = false;
   bool _handled = false;
-  String? _statusMessage;
-  bool _success = false;
+  String? _lastResult;
+  bool _lastSuccess = false;
+  bool _keyStep = false;
+  // questionId -> option text -> marks controller (per-option partial credit).
+  final Map<String, Map<String, TextEditingController>> _markCtrls = {};
+
+  Assessment? get _asm => widget.assessment;
+
+  bool _isObjective(AssessmentQuestion q) =>
+      q.type == QuestionType.mcq || q.type == QuestionType.trueFalse;
+
+  @override
+  void initState() {
+    super.initState();
+    final a = _asm;
+    if (a != null) {
+      for (final q in a.questions) {
+        if (!_isObjective(q)) continue;
+        final ctrls = <String, TextEditingController>{};
+        for (final opt in q.options) {
+          // Pre-fill: existing per-option marks, else the old correct option
+          // gets the question's full marks, else blank.
+          int? value;
+          if (q.optionMarks.isNotEmpty) {
+            value = q.optionMarks[opt];
+          } else if ((q.correctAnswer ?? '') == opt) {
+            value = q.marks;
+          }
+          ctrls[opt] = TextEditingController(
+            text: value == null ? '' : '$value',
+          );
+        }
+        _markCtrls[q.id] = ctrls;
+      }
+      // Ask the teacher for the marking scheme FIRST when an objective question
+      // has none — so a paper can be built WITHOUT answers (nothing to leak in
+      // the student QR) and marks still apply automatically while scanning.
+      _keyStep = widget.repository.assessmentNeedsAnswerKey(a.id);
+    }
+    if (!_keyStep) _ensureCamera();
+  }
 
   @override
   void dispose() {
+    for (final m in _markCtrls.values) {
+      for (final c in m.values) {
+        c.dispose();
+      }
+    }
     _ctrl?.dispose();
     super.dispose();
   }
 
-  Future<void> _startCamera() async {
-    _handled = false;
+  void _ensureCamera() {
     _ctrl ??= MobileScannerController(
       detectionSpeed: DetectionSpeed.noDuplicates,
       formats: const [BarcodeFormat.qrCode],
     );
-    await _ctrl!.start();
-    if (mounted) setState(() => _cameraOpen = true);
   }
 
-  Future<void> _stopCamera() async {
-    await _ctrl?.stop();
-    if (mounted) setState(() => _cameraOpen = false);
+  static const MethodChannel _speech = MethodChannel(
+    'csexam_qr_attendance/speech',
+  );
+
+  void _say(String message) {
+    if (message.trim().isEmpty) return;
+    try {
+      _speech.invokeMethod<void>('speak', {'message': message});
+    } catch (_) {
+      // No native TTS (desktop/web) — silent is fine.
+    }
+  }
+
+  Future<void> _exportResults(Assessment a, {required bool csv}) async {
+    final subs = widget.repository.submissionsForAssessment(a.id);
+    if (subs.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No submissions to export yet.')),
+      );
+      return;
+    }
+    try {
+      if (csv) {
+        await QuizResultsExport.shareCsv(a, subs);
+      } else {
+        await QuizResultsExport.sharePdf(a, subs);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      }
+    }
+  }
+
+  /// Builds the questionId → (option → marks) scheme from the input boxes.
+  Map<String, Map<String, int>> _collectScheme() {
+    final out = <String, Map<String, int>>{};
+    _markCtrls.forEach((qid, ctrls) {
+      final om = <String, int>{};
+      ctrls.forEach((opt, c) {
+        final v = int.tryParse(c.text.trim());
+        if (v != null) om[opt] = v;
+      });
+      if (om.isNotEmpty) out[qid] = om;
+    });
+    return out;
+  }
+
+  /// Ready when every objective question has at least one option scored > 0.
+  bool get _schemeReady {
+    for (final ctrls in _markCtrls.values) {
+      final hasPositive = ctrls.values.any(
+        (c) => (int.tryParse(c.text.trim()) ?? 0) > 0,
+      );
+      if (!hasPositive) return false;
+    }
+    return _markCtrls.isNotEmpty;
+  }
+
+  void _saveKeyAndScan() {
+    final a = _asm;
+    if (a != null) {
+      widget.repository.setAssessmentMarkingScheme(a.id, _collectScheme());
+    }
+    _ensureCamera();
+    setState(() => _keyStep = false);
   }
 
   void _onDetect(BarcodeCapture capture) {
@@ -2343,116 +2931,335 @@ class _ScanSubmissionScreenState extends State<_ScanSubmissionScreen> {
         .firstWhere((v) => v.isNotEmpty, orElse: () => '');
     if (raw.isEmpty) return;
     _handled = true;
-    unawaited(_stopCamera());
     _handleRaw(raw);
+    // Keep the camera ON — just cool down briefly before the next student,
+    // exactly like the exam paper-QR scanner.
+    Future.delayed(const Duration(milliseconds: 1300), () {
+      if (mounted) _handled = false;
+    });
   }
 
   void _handleRaw(String raw) {
     if (!SubmissionQrCodec.looksLike(raw)) {
       setState(() {
-        _statusMessage =
-            'This QR is not a student submission — please try again.';
-        _success = false;
+        _lastResult = 'Not a student submission QR — try again.';
+        _lastSuccess = false;
       });
       return;
     }
     try {
       final submission = SubmissionQrCodec.decode(raw);
-      widget.repository.importSubmission(submission);
+      final scope = _asm;
+      if (scope != null && submission.assessmentId != scope.id) {
+        setState(() {
+          _lastResult =
+              'Different quiz — this scanner is only for "${scope.title}".';
+          _lastSuccess = false;
+        });
+        return;
+      }
+      final imported = widget.repository.importSubmission(submission);
+      final name = submission.studentName.trim();
+      final who = name.isEmpty
+          ? submission.studentId
+          : '${submission.studentId} • $name';
+      final marksLabel = imported.marks == null
+          ? 'needs manual grading'
+          : '${imported.marks} marks';
+      // Call out the student's name (and marks) so the teacher gets clear
+      // audio confirmation of who was just scanned.
+      _say(
+        name.isEmpty
+            ? 'Received'
+            : imported.marks == null
+            ? name
+            : '$name, ${imported.marks} marks',
+      );
       setState(() {
-        _statusMessage =
-            'Submission received from ${submission.studentId}. '
-            'Tap "Go to Results" to grade it.';
-        _success = true;
+        _lastResult = '✓ $who — $marksLabel';
+        _lastSuccess = true;
       });
     } on FormatException catch (e) {
       setState(() {
-        _statusMessage = 'Invalid submission QR: ${e.message}';
-        _success = false;
+        _lastResult = 'Invalid submission QR: ${e.message}';
+        _lastSuccess = false;
       });
     }
   }
 
+  /// Live attendance + collection stats for the last-scanned submission's
+  /// assessment: how many were expected, how many submitted (present), and how
+  /// many are still pending (absent).
+  Widget _buildStatsCard() {
+    final id = _asm?.id;
+    if (id == null) return const SizedBox.shrink();
+    final assessment = widget.repository.assessmentById(id);
+    if (assessment == null) return const SizedBox.shrink();
+    final present = widget.repository.submissionsForAssessment(id).length;
+    final total = assessment.expectedStudents > 0
+        ? assessment.expectedStudents
+        : widget.repository.studentsForAssessment(assessment).length;
+    final absent = total > present ? total - present : 0;
+    final pct = total > 0 ? ((present / total) * 100).clamp(0, 100).round() : 0;
+
+    Widget stat(String label, String value, Color color) => Expanded(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 3),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.30)),
+        ),
+        child: Column(
+          children: [
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            assessment.title,
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              stat('Total', '$total', const Color(0xFF334155)),
+              stat('Submitted', '$present', const Color(0xFF047857)),
+              stat('Absent', '$absent', const Color(0xFFB91C1C)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: total > 0 ? present / total : 0,
+              minHeight: 9,
+              backgroundColor: const Color(0xFFE2E8F0),
+              color: const Color(0xFF047857),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '$present of $total submitted ($pct%) • $absent still absent',
+            style: const TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF475569),
+            ),
+          ),
+          if (total == 0)
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text(
+                'Tip: re-create the paper on this build so the expected count '
+                'is known (older papers show 0).',
+                style: TextStyle(fontSize: 10.5, color: Color(0xFF94A3B8)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: widget.repository,
+      builder: (context, _) => _keyStep ? _answerKeyView() : _scanView(),
+    );
+  }
+
+  // ----- Step 1: answer key (teacher only, never in the student QR) ---------
+
+  Widget _answerKeyView() {
+    final a = _asm!;
+    final objective = a.questions.where(_isObjective).toList();
     return _TeacherScroll(
       children: [
         _HeaderCard(
-          title: 'Scan student submission',
+          title: 'Marking scheme — ${a.title}',
           subtitle:
-              'Ask the student to show their submission QR. Point this camera at it to receive their answers offline — no internet needed.',
+              'Give each option its own marks (your values, your order). The '
+              'student earns the marks of the option they pick. This stays on '
+              'YOUR phone only — never in the student QR.',
+          icon: Icons.tune_rounded,
+        ),
+        const SizedBox(height: 16),
+        for (var i = 0; i < objective.length; i++)
+          _keyQuestion(i + 1, objective[i]),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: _schemeReady ? _saveKeyAndScan : null,
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF047857),
+            ),
+            icon: const Icon(Icons.qr_code_scanner_rounded),
+            label: const Text('Save scheme & start scanning'),
+          ),
+        ),
+        if (!_schemeReady)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'Give at least one option a mark above 0 in every question.',
+              style: TextStyle(color: Color(0xFFB91C1C), fontSize: 12),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _keyQuestion(int n, AssessmentQuestion q) {
+    final ctrls = _markCtrls[q.id] ?? const {};
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Q$n. ${q.question}',
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Marks for each option',
+            style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+          ),
+          const SizedBox(height: 8),
+          for (final opt in q.options)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      opt,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 72,
+                    child: TextField(
+                      controller: ctrls[opt],
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        hintText: 'marks',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 8,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ----- Step 2: continuous scanning (camera stays ON) ----------------------
+
+  Widget _scanView() {
+    final a = _asm;
+    return _TeacherScroll(
+      children: [
+        _HeaderCard(
+          title: a == null ? 'Scan student submission' : 'Scan: ${a.title}',
+          subtitle:
+              'Camera stays ON — show each student\'s submission QR one after '
+              'another (like the exam paper scan). Marks apply automatically.',
           icon: Icons.qr_code_scanner_rounded,
         ),
         const SizedBox(height: 16),
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (_cameraOpen)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(18),
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          MobileScanner(controller: _ctrl, onDetect: _onDetect),
-                          IgnorePointer(
-                            child: Center(
-                              child: Container(
-                                width: 200,
-                                height: 200,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(18),
-                                  border: Border.all(
-                                    color: Colors.white,
-                                    width: 3,
-                                  ),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (_ctrl != null)
+                          MobileScanner(
+                            controller: _ctrl,
+                            onDetect: _onDetect,
+                          ),
+                        IgnorePointer(
+                          child: Center(
+                            child: Container(
+                              width: 200,
+                              height: 200,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 3,
                                 ),
                               ),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                  )
-                else
-                  Container(
-                    height: 160,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8FAFC),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: PortalColors.cardBorder),
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.qr_code_scanner_rounded,
-                          size: 56,
-                          color: PortalColors.brandBlue,
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          'Camera off',
-                          style: TextStyle(color: PortalColors.subtleText),
                         ),
                       ],
                     ),
                   ),
-                const SizedBox(height: 14),
-                if (_statusMessage != null)
+                ),
+                if (_lastResult != null) ...[
+                  const SizedBox(height: 12),
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: _success
+                      color: _lastSuccess
                           ? const Color(0xFFEAFBEF)
                           : const Color(0xFFFEE2E2),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: _success
+                        color: _lastSuccess
                             ? const Color(0xFFB9F4C9)
                             : const Color(0xFFF4C9C9),
                       ),
@@ -2460,20 +3267,20 @@ class _ScanSubmissionScreenState extends State<_ScanSubmissionScreen> {
                     child: Row(
                       children: [
                         Icon(
-                          _success
+                          _lastSuccess
                               ? Icons.check_circle_outline
                               : Icons.error_outline,
-                          color: _success
+                          color: _lastSuccess
                               ? const Color(0xFF0F766E)
                               : const Color(0xFFB91C1C),
                         ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            _statusMessage!,
+                            _lastResult!,
                             style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: _success
+                              fontWeight: FontWeight.w800,
+                              color: _lastSuccess
                                   ? const Color(0xFF0F766E)
                                   : const Color(0xFFB91C1C),
                             ),
@@ -2482,28 +3289,147 @@ class _ScanSubmissionScreenState extends State<_ScanSubmissionScreen> {
                       ],
                     ),
                   ),
+                ],
                 const SizedBox(height: 12),
-                if (_success)
-                  FilledButton.icon(
-                    onPressed: widget.onDone,
-                    icon: const Icon(Icons.grade_outlined),
-                    label: const Text('Go to Results to grade'),
-                  )
-                else
-                  FilledButton.icon(
-                    onPressed: _cameraOpen ? _stopCamera : _startCamera,
-                    icon: Icon(
-                      _cameraOpen
-                          ? Icons.close_rounded
-                          : Icons.photo_camera_rounded,
-                    ),
-                    label: Text(_cameraOpen ? 'Close camera' : 'Open camera'),
+                _buildStatsCard(),
+                const SizedBox(height: 12),
+                _liveList(),
+                if (a != null) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _exportResults(a, csv: true),
+                          icon: const Icon(Icons.grid_on_rounded),
+                          label: const Text('Export Excel'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _exportResults(a, csv: false),
+                          icon: const Icon(Icons.picture_as_pdf_rounded),
+                          label: const Text('Export PDF'),
+                        ),
+                      ),
+                    ],
                   ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    if (a != null) ...[
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => setState(() => _keyStep = true),
+                          icon: const Icon(Icons.vpn_key_outlined),
+                          label: const Text('Answer key'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: widget.onDone,
+                        icon: const Icon(Icons.grading_outlined),
+                        label: const Text('Done'),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
         ),
       ],
+    );
+  }
+
+  /// Live list of who has been scanned for THIS quiz, with their marks.
+  Widget _liveList() {
+    final a = _asm;
+    if (a == null) return const SizedBox.shrink();
+    final subs = [...widget.repository.submissionsForAssessment(a.id)]..sort(
+      (x, y) => (y.submittedAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+          .compareTo(x.submittedAt ?? DateTime.fromMillisecondsSinceEpoch(0)),
+    );
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8FB),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Scanned for this quiz',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+              ),
+              Text(
+                '${subs.length}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF047857),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (subs.isEmpty)
+            const Text(
+              'No scans yet — show a student\'s submission QR to the camera.',
+              style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+            )
+          else
+            for (var i = 0; i < subs.length; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 20,
+                      child: Text(
+                        '${i + 1}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        '${subs[i].studentId}'
+                        '${subs[i].studentName.isEmpty ? '' : ' • ${subs[i].studentName}'}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      subs[i].marks == null
+                          ? '—'
+                          : '${subs[i].marks}${a.totalMarks > 0 ? '/${a.totalMarks}' : ''}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12.5,
+                        color: subs[i].marks == null
+                            ? const Color(0xFF94A3B8)
+                            : const Color(0xFF0F766E),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+        ],
+      ),
     );
   }
 }
@@ -2671,12 +3597,14 @@ class _TeacherModulesPanel extends StatelessWidget {
         final visible = service
             .visibleFor(AppRole.faculty)
             // FYP has its own slot; the gate keys are nav tabs, not cards.
-            .where((meta) =>
-                meta.key != FeatureKey.fyp &&
-                meta.key != FeatureKey.teacherModules &&
-                meta.key != FeatureKey.teacherAssess &&
-                meta.key != FeatureKey.teacherLive &&
-                meta.key != FeatureKey.teacherResults)
+            .where(
+              (meta) =>
+                  meta.key != FeatureKey.fyp &&
+                  meta.key != FeatureKey.teacherModules &&
+                  meta.key != FeatureKey.teacherAssess &&
+                  meta.key != FeatureKey.teacherLive &&
+                  meta.key != FeatureKey.teacherResults,
+            )
             .toList();
         if (visible.isEmpty) {
           return const SizedBox.shrink();

@@ -4,6 +4,9 @@ import 'package:archive/archive.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import 'admin_data_bundle.dart';
+import 'cloud_sync_service.dart';
+
 /// Tracks the custody of exam answer-sheet bundles between the admin/exam-cell
 /// and the teachers who mark them.
 ///
@@ -51,6 +54,20 @@ class AnswerSheetRepository {
       throw StateError('AnswerSheetRepository.open() was not called.');
     }
     return db;
+  }
+
+  // ---------------------------------------------------- admin data-share
+  Future<Map<String, dynamic>> exportBundle() async {
+    return {'paper_batches': await TableSync.dump(_requireDb(), 'paper_batches')};
+  }
+
+  Future<(int, int)> importBundle(Map<String, dynamic> data) async {
+    return TableSync.merge(
+      _requireDb(),
+      'paper_batches',
+      (data['paper_batches'] as List?) ?? const [],
+      tsOf: (r) => TableSync.tsAny(r, ['returned_at', 'issued_at']),
+    );
   }
 
   /// Parses [rawPayload] and records every paper bundle in it as issued (or
@@ -119,6 +136,7 @@ class AnswerSheetRepository {
         .toSet()
         .length;
     final verb = isReturn ? 'Returned' : 'Issued';
+    CloudSyncService.instance.pushModulesSoon('answerSheets');
     return PaperScanResult(
       affected: affected,
       created: created,
@@ -154,6 +172,7 @@ class AnswerSheetRepository {
         whereArgs: [id],
       );
     }
+    CloudSyncService.instance.pushModulesSoon('answerSheets');
   }
 
   Future<List<PaperBatch>> loadAll() async {

@@ -167,6 +167,48 @@ class StudentDirectoryService {
     return const [];
   }
 
+  Future<List<StudentRecord>> classmatesFor(StudentRecord student) async {
+    String n(String value) => value.trim().toLowerCase();
+
+    for (final path in _prioritizedPaths()) {
+      final snapshot = await _reference(path).get();
+      final rows = _extractRows(snapshot.value);
+      if (rows.isEmpty) continue;
+
+      final groupedRows = <String, List<Map<String, dynamic>>>{};
+      for (final row in rows) {
+        final rollNo = _stringValue(row, const [
+          'Roll no',
+          'roll_no',
+          'rollNo',
+        ]);
+        if (rollNo.isEmpty) continue;
+        groupedRows
+            .putIfAbsent(rollNo, () => <Map<String, dynamic>>[])
+            .add(row);
+      }
+
+      final records = groupedRows.values
+          .map(StudentRecord.fromRows)
+          .where((record) {
+            return n(record.program) == n(student.program) &&
+                n(record.semester) == n(student.semester) &&
+                n(record.section) == n(student.section);
+          })
+          .toList(growable: false);
+
+      if (records.isNotEmpty) {
+        _matchedPath = path;
+        records.sort(
+          (a, b) => a.rollNo.toLowerCase().compareTo(b.rollNo.toLowerCase()),
+        );
+        return records;
+      }
+    }
+
+    return [student];
+  }
+
   Iterable<String> _prioritizedPaths() sync* {
     if (_matchedPath != null) {
       yield _matchedPath!;

@@ -80,6 +80,17 @@ class _LiveHallAttendanceViewState extends State<LiveHallAttendanceView> {
     super.dispose();
   }
 
+  /// Opens a student's mark menu (present / QR problem / paper not returned, or
+  /// absent / UFM if already present) — used by the roll/name search.
+  Future<void> _openMarkMenu(ExamAttendanceStudent student) async {
+    if (mounted) FocusScope.of(context).unfocus();
+    if (_present.contains(student.studentId)) {
+      await _showPresentActions(student);
+    } else {
+      await _showAbsentActions(student);
+    }
+  }
+
   // Spoken confirmation after each scan (same native TTS channel the standalone
   // QR attendance scanner used). Silently ignored if the device has no TTS.
   Future<void> _speak(String message) async {
@@ -460,7 +471,72 @@ class _LiveHallAttendanceViewState extends State<LiveHallAttendanceView> {
     setState(() => _scanMessage = 'Undone: ${student.rollNo}');
   }
 
-  /// Tapping a present student offers: mark absent, delete the scan, or UFM.
+  /// Tapping an ABSENT seat: mark present normally, or present-with-a-flag for
+  /// the QR-didn't-print and paper-not-returned cases (manual entry).
+  Future<void> _showAbsentActions(ExamAttendanceStudent student) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(
+                '${student.rollNo} — ${student.studentName}',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: const Text('Mark this student present'),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.check_circle_outline,
+                  color: Color(0xFF047857)),
+              title: const Text('Present'),
+              onTap: () => Navigator.pop(ctx, 'present'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.qr_code_2_rounded,
+                  color: Color(0xFFB45309)),
+              title: const Text('Present — QR problem (couldn\'t scan)'),
+              onTap: () => Navigator.pop(ctx, 'qr_problem'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined,
+                  color: Color(0xFF7C3AED)),
+              title: const Text('Present — paper not returned'),
+              onTap: () => Navigator.pop(ctx, 'paper_not_returned'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null) return;
+    if (action == 'present') {
+      await _markPresent(student);
+    } else {
+      await _markPresentFlagged(student, action);
+    }
+  }
+
+  /// Marks [student] present and records a flag (qr_problem / paper_not_returned).
+  Future<void> _markPresentFlagged(
+    ExamAttendanceStudent student,
+    String flag,
+  ) async {
+    await _markPresent(student);
+    await _database.setAttendanceFlag(
+      sheetId: widget.sheetId,
+      studentId: student.studentId,
+      flag: flag,
+    );
+    await _refreshStudents();
+    if (!mounted) return;
+    final label =
+        flag == 'qr_problem' ? 'QR problem' : 'paper not returned';
+    setState(() => _scanMessage = '${student.rollNo}: present ($label)');
+  }
+
+  /// Tapping a present student offers: mark absent, flags, delete, or UFM.
   Future<void> _showPresentActions(ExamAttendanceStudent student) async {
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -482,6 +558,25 @@ class _LiveHallAttendanceViewState extends State<LiveHallAttendanceView> {
               onTap: () => Navigator.pop(ctx, 'absent'),
             ),
             ListTile(
+              leading: const Icon(Icons.qr_code_2_rounded,
+                  color: Color(0xFFB45309)),
+              title: const Text('QR problem (present, couldn\'t scan)'),
+              onTap: () => Navigator.pop(ctx, 'qr_problem'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined,
+                  color: Color(0xFF7C3AED)),
+              title: const Text('Paper not returned (present)'),
+              onTap: () => Navigator.pop(ctx, 'paper_not_returned'),
+            ),
+            if (student.flag.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.flag_outlined,
+                    color: Color(0xFF475569)),
+                title: const Text('Clear flag (keep present)'),
+                onTap: () => Navigator.pop(ctx, 'clear_flag'),
+              ),
+            ListTile(
               leading: const Icon(Icons.delete_outline_rounded,
                   color: Color(0xFFB91C1C)),
               title: const Text('Delete scan (scanned by mistake)'),
@@ -499,6 +594,18 @@ class _LiveHallAttendanceViewState extends State<LiveHallAttendanceView> {
     switch (action) {
       case 'absent':
         await _unmarkPresent(student);
+        break;
+      case 'qr_problem':
+      case 'paper_not_returned':
+        await _markPresentFlagged(student, action!);
+        break;
+      case 'clear_flag':
+        await _database.setAttendanceFlag(
+          sheetId: widget.sheetId,
+          studentId: student.studentId,
+          flag: '',
+        );
+        await _refreshStudents();
         break;
       case 'delete':
         await _deleteScan(student);
@@ -735,6 +842,93 @@ class _LiveHallAttendanceViewState extends State<LiveHallAttendanceView> {
             ],
           ),
         ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Autocomplete<ExamAttendanceStudent>(
+            displayStringForOption: (s) => s.rollNo,
+            optionsBuilder: (value) {
+              final q = value.text.trim().toLowerCase();
+              if (q.isEmpty) {
+                return const Iterable<ExamAttendanceStudent>.empty();
+              }
+              final qNoSpace = q.replaceAll(' ', '');
+              // Only THIS hall (and only the selected class when scoped).
+              final pool = selectedClass == null
+                  ? _students
+                  : _students.where(_inSelectedClass);
+              return pool
+                  .where(
+                    (s) =>
+                        s.rollNo
+                            .toLowerCase()
+                            .replaceAll(' ', '')
+                            .contains(qNoSpace) ||
+                        s.studentName.toLowerCase().contains(q),
+                  )
+                  .take(12);
+            },
+            onSelected: _openMarkMenu,
+            fieldViewBuilder:
+                (context, controller, focusNode, onFieldSubmitted) {
+                  return TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      hintText: 'Search roll no or name → tap to mark',
+                      prefixIcon: Icon(Icons.search_rounded),
+                    ),
+                  );
+                },
+            optionsViewBuilder: (context, onSelected, options) {
+              return Align(
+                alignment: Alignment.topLeft,
+                child: Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(12),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      maxHeight: 260,
+                      maxWidth: 360,
+                    ),
+                    child: ListView(
+                      padding: EdgeInsets.zero,
+                      shrinkWrap: true,
+                      children: [
+                        for (final s in options)
+                          ListTile(
+                            dense: true,
+                            leading: Icon(
+                              _present.contains(s.studentId)
+                                  ? Icons.check_circle_rounded
+                                  : Icons.event_seat_outlined,
+                              color: _present.contains(s.studentId)
+                                  ? const Color(0xFF047857)
+                                  : PortalColors.subtleText,
+                              size: 18,
+                            ),
+                            title: Text(
+                              s.rollNo,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            subtitle: Text(
+                              s.studentName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () => onSelected(s),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
         const SizedBox(height: 10),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -779,7 +973,7 @@ class _LiveHallAttendanceViewState extends State<LiveHallAttendanceView> {
             if (_present.contains(student.studentId)) {
               _showPresentActions(student);
             } else {
-              _markPresent(student);
+              _showAbsentActions(student);
             }
           },
           onLongPress: _openUfmDialogFor,
@@ -1552,6 +1746,28 @@ class _SeatGrid extends StatelessWidget {
                   decoration: const BoxDecoration(
                     color: Color(0xFFF59E0B),
                     shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            if (student.flag.isNotEmpty)
+              Positioned(
+                top: 3,
+                left: 3,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: student.flag == 'qr_problem'
+                        ? const Color(0xFFB45309)
+                        : const Color(0xFF7C3AED),
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Text(
+                    student.flag == 'qr_problem' ? 'QR' : 'NR',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
               ),

@@ -15,6 +15,9 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../services/cloud_sync_service.dart';
+import '../services/login_store.dart';
+
 const String _transferQrPrefix = 'CSEXAM|QXFER|1|';
 
 bool get _cameraScannerSupported =>
@@ -207,12 +210,19 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
       token: parsed.token,
       rollNo: parsed.rollNo,
     );
+    final collector = LoginStore.instance.currentUserName.trim();
     final scan = parsed.toScan(
       deviceId: _settings.deviceId,
       deviceName: _settings.deviceName,
+      collectedBy: collector.isEmpty ? _settings.deviceName : collector,
       seed: seed,
     );
     final result = await _repository.saveScan(scan);
+    if (result == SaveScanResult.inserted) {
+      // Fire-and-forget: send the fresh scan up to Firebase right away (it
+      // queues offline and delivers when internet returns).
+      unawaited(CloudSyncService.instance.pushLocalScans());
+    }
     await _reload();
     if (!mounted) return;
     final displayName = seed?.studentName.isNotEmpty == true
@@ -695,7 +705,7 @@ class _AttendanceTabChip extends StatelessWidget {
                 icon,
                 size: 18,
                 color: selected
-                    ? const Color(0xFF2948B7)
+                    ? const Color(0xFF8A6E16)
                     : const Color(0xFF667085),
               ),
               const SizedBox(width: 6),
@@ -704,7 +714,7 @@ class _AttendanceTabChip extends StatelessWidget {
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   color: selected
-                      ? const Color(0xFF2948B7)
+                      ? const Color(0xFF8A6E16)
                       : const Color(0xFF667085),
                 ),
               ),
@@ -1111,6 +1121,8 @@ class _TransferTab extends StatelessWidget {
                         selectedDate ?? '',
                         selectedShift ?? '',
                         '${selectedScans.length} record(s)',
+                        if (_collectorsLabel(selectedScans).isNotEmpty)
+                          'Collected by ${_collectorsLabel(selectedScans)}',
                       ].where((value) => value.isNotEmpty).join(' | '),
                       textAlign: TextAlign.center,
                       style: const TextStyle(fontWeight: FontWeight.w700),
@@ -1475,6 +1487,7 @@ class _ScanRecordTile extends StatelessWidget {
             if (scan.seatLabel.isNotEmpty) scan.seatLabel,
             if (scan.subject.isNotEmpty) scan.subject,
             _formatDateTime(scan.scannedAt),
+            if (scan.collectedBy.isNotEmpty) 'By ${scan.collectedBy}',
             if (scan.lastError != null) 'Error: ${scan.lastError}',
           ].join(' | '),
         ),
@@ -1605,6 +1618,22 @@ class AttendanceRepository {
     return TransferImportResult(inserted: inserted, duplicates: duplicates);
   }
 
+  /// Admin data-share: every scan as JSON (for a full-data bundle).
+  Future<List<Map<String, Object?>>> exportScans() async =>
+      (await loadScans()).map((s) => s.toJson()).toList();
+
+  /// Admin data-share: merges scans from another admin's bundle. Scans are
+  /// immutable and deduped by token, so this only ever ADDS (never overwrites).
+  /// Returns (added, updated) with updated always 0.
+  Future<(int, int)> importScans(List<dynamic> rows) async {
+    final scans = <AttendanceScan>[];
+    for (final r in rows) {
+      if (r is Map) scans.add(AttendanceScan.fromTransferJson(r));
+    }
+    final result = await importTransferredScans(scans);
+    return (result.inserted, 0);
+  }
+
   Future<void> recordTransferEvent({
     required TransferDirection direction,
     required String examDate,
@@ -1728,6 +1757,7 @@ class AttendanceRepository {
         synced_at TEXT,
         device_id TEXT NOT NULL DEFAULT '',
         device_name TEXT NOT NULL DEFAULT '',
+        collected_by TEXT NOT NULL DEFAULT '',
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT
       )
@@ -1743,6 +1773,12 @@ class AttendanceRepository {
       "TEXT NOT NULL DEFAULT ''",
     );
     await _ensureColumn(db, 'scans', 'seat_label', "TEXT NOT NULL DEFAULT ''");
+    await _ensureColumn(
+      db,
+      'scans',
+      'collected_by',
+      "TEXT NOT NULL DEFAULT ''",
+    );
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_scans_synced ON scans(synced_at)',
     );
@@ -2035,6 +2071,7 @@ class ParsedQrPayload {
   AttendanceScan toScan({
     required String deviceId,
     required String deviceName,
+    String collectedBy = '',
     SeedToken? seed,
   }) {
     return AttendanceScan(
@@ -2056,6 +2093,7 @@ class ParsedQrPayload {
       syncedAt: null,
       deviceId: deviceId,
       deviceName: deviceName,
+      collectedBy: collectedBy,
       attempts: 0,
       lastError: null,
     );
@@ -2083,6 +2121,7 @@ class AttendanceScan {
     required this.syncedAt,
     required this.deviceId,
     required this.deviceName,
+    this.collectedBy = '',
     required this.attempts,
     required this.lastError,
   });
@@ -2106,6 +2145,9 @@ class AttendanceScan {
   final DateTime? syncedAt;
   final String deviceId;
   final String deviceName;
+
+  /// The name of the teacher/person who collected (scanned) this attendance.
+  final String collectedBy;
   final int attempts;
   final String? lastError;
 
@@ -2132,6 +2174,7 @@ class AttendanceScan {
       syncedAt: _dateOrNull(map['synced_at']),
       deviceId: (map['device_id'] ?? '').toString(),
       deviceName: (map['device_name'] ?? '').toString(),
+      collectedBy: (map['collected_by'] ?? '').toString(),
       attempts: _intFromDb(map['attempts']),
       lastError: _stringOrNull(map['last_error']),
     );
@@ -2159,6 +2202,7 @@ class AttendanceScan {
       syncedAt: null,
       deviceId: _transferString(map, 'device_id', 'di'),
       deviceName: _transferString(map, 'device_name', 'dn'),
+      collectedBy: _transferString(map, 'collected_by', 'cb'),
       attempts: 0,
       lastError: null,
     );
@@ -2185,6 +2229,7 @@ class AttendanceScan {
       'synced_at': syncedAt?.toIso8601String(),
       'device_id': deviceId,
       'device_name': deviceName,
+      'collected_by': collectedBy,
       'attempts': attempts,
       'last_error': lastError,
     };
@@ -2209,6 +2254,7 @@ class AttendanceScan {
       'scanned_at': scannedAt.toIso8601String(),
       'device_id': deviceId,
       'device_name': deviceName,
+      'collected_by': collectedBy,
     };
   }
 
@@ -2231,6 +2277,7 @@ class AttendanceScan {
       'at': scannedAt.toIso8601String(),
       'di': deviceId,
       'dn': deviceName,
+      'cb': collectedBy,
     };
   }
 }
@@ -2520,6 +2567,16 @@ int _intFromDb(Object? value) {
 
 String _formatDateTime(DateTime value) {
   return DateFormat('dd-MM-yyyy HH:mm').format(value.toLocal());
+}
+
+/// Distinct teacher/collector names across a set of scans (for the share label).
+String _collectorsLabel(List<AttendanceScan> scans) {
+  final names = <String>{};
+  for (final s in scans) {
+    final c = s.collectedBy.trim();
+    if (c.isNotEmpty) names.add(c);
+  }
+  return names.join(', ');
 }
 
 String _nextScanPrompt(AttendanceScan scan, {ParsedQrPayload? parsed}) {

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../assessment/student_assessment_flow.dart';
+import '../features/change_password_page.dart';
 import '../features/feature_catalog.dart';
 import '../features/feature_visibility_service.dart';
+import '../assessment/menu_wheel.dart';
 import '../fyp/fyp_models.dart';
 import '../fyp/fyp_section.dart';
 import '../internships/internships_section.dart';
@@ -78,22 +80,37 @@ class _StudentPortalShellState extends State<StudentPortalShell> {
       _ProfileTab(
         student: widget.student,
         onLogout: () => _confirmLogout(context),
+        onChangePassword: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ChangePasswordPage(repository: widget.repository),
+          ),
+        ),
       ),
     ];
 
     return AppRepositoryAccess(
       repository: widget.repository,
-      child: Scaffold(
-        backgroundColor: PortalColors.pageBackground,
-        body: SafeArea(
-          child: Column(
-            children: [
-              _PortalTopBar(initials: portalInitials(widget.student.studentName)),
-              Expanded(
-                child: IndexedStack(index: _currentIndex, children: pages),
-              ),
-              _PortalBottomNav(currentIndex: _currentIndex, onTap: _setTab),
-            ],
+      child: PopScope(
+        // System back goes to the Home tab first; only exits from Home.
+        canPop: _currentIndex == 0,
+        onPopInvokedWithResult: (didPop, result) {
+          if (didPop) return;
+          _setTab(0);
+        },
+        child: Scaffold(
+          backgroundColor: PortalColors.pageBackground,
+          body: SafeArea(
+            child: Column(
+              children: [
+                _PortalTopBar(
+                  initials: portalInitials(widget.student.studentName),
+                ),
+                Expanded(
+                  child: IndexedStack(index: _currentIndex, children: pages),
+                ),
+                _PortalBottomNav(currentIndex: _currentIndex, onTap: _setTab),
+              ],
+            ),
           ),
         ),
       ),
@@ -533,74 +550,15 @@ class _DashboardTab extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 18),
-          _ModulesSection(student: student),
-          if (_shouldShowFyp(student.program, student.semester)) ...[
-            const SizedBox(height: 18),
-            _SectionCard(
-              borderColor: PortalColors.purpleBorder,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'FINAL YEAR PROJECTS',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: const Color(0xFF5A5E72),
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  _FypItem(
-                    title: 'Final Year Project I',
-                    subtitle: 'Submit FYP-I group form and generate QR',
-                    onTap: () => _openFyp(context, FypPhase.fyp1),
-                  ),
-                  _FypItem(
-                    title: 'Final Year Project II',
-                    subtitle: 'Submit FYP-II proforma',
-                    onTap: () => _openFyp(context, FypPhase.fyp2),
-                  ),
-                  _FypItem(
-                    title: 'Final Year Project III',
-                    subtitle: 'Submit FYP-III proforma',
-                    onTap: () => _openFyp(context, FypPhase.fyp3),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 18),
-          _SectionCard(
-            borderColor: PortalColors.cardBorder,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'INTERNSHIPS',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: const Color(0xFF5A5E72),
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.8,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                _FypItem(
-                  title: 'Internships',
-                  subtitle: 'Coming soon — opportunities and applications',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const InternshipsSection(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          // Same gold spinning wheel as the teacher home: modules + FYP +
+          // Internships all orbit the wheel (flick to spin, tap to open).
+          _StudentMenuWheel(student: student),
         ],
       ),
     );
   }
 
+  // ignore: unused_element
   void _openFyp(BuildContext context, FypPhase phase) {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -1013,10 +971,15 @@ class _RequestsTab extends StatelessWidget {
 }
 
 class _ProfileTab extends StatelessWidget {
-  const _ProfileTab({required this.student, required this.onLogout});
+  const _ProfileTab({
+    required this.student,
+    required this.onLogout,
+    required this.onChangePassword,
+  });
 
   final StudentRecord student;
   final VoidCallback onLogout;
+  final VoidCallback onChangePassword;
 
   @override
   Widget build(BuildContext context) {
@@ -1067,6 +1030,15 @@ class _ProfileTab extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onChangePassword,
+              icon: const Icon(Icons.password_outlined),
+              label: const Text('Change Password'),
+            ),
+          ),
+          const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
@@ -1341,6 +1313,7 @@ class _RequestItem extends StatelessWidget {
   }
 }
 
+// ignore: unused_element
 class _FypItem extends StatelessWidget {
   const _FypItem({
     required this.title,
@@ -1537,6 +1510,77 @@ bool _shouldShowFyp(String program, String semester) {
           normalizedProgram.contains('software'));
 }
 
+/// The student's home menu as the gold spinning wheel (matches the teacher's).
+/// Modules + FYP (if eligible) + Internships are the wheel items.
+class _StudentMenuWheel extends StatelessWidget {
+  const _StudentMenuWheel({required this.student});
+  final StudentRecord student;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: FeatureVisibilityService.instance,
+      builder: (context, _) {
+        const hiddenForStudents = {
+          FeatureKey.grades,
+          FeatureKey.timeTable,
+          FeatureKey.classAttendance,
+          FeatureKey.courseMaterials,
+        };
+        final visible = FeatureVisibilityService.instance
+            .visibleFor(AppRole.student)
+            .where(
+              (meta) =>
+                  meta.key != FeatureKey.fyp &&
+                  meta.key != FeatureKey.internships &&
+                  !hiddenForStudents.contains(meta.key),
+            )
+            .toList();
+        final repository = AppRepositoryAccess.of(context);
+        final items = <WheelItem>[
+          for (final meta in visible)
+            WheelItem(
+              icon: meta.icon,
+              label: meta.label,
+              onTap: () => ModuleRouter.open(
+                context,
+                feature: meta.key,
+                repository: repository,
+                student: student,
+              ),
+            ),
+          if (_shouldShowFyp(student.program, student.semester))
+            WheelItem(
+              icon: Icons.school_outlined,
+              label: 'FYP',
+              sub: 'Final Year Project',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => FypSection(
+                    repository: repository,
+                    student: student,
+                    initialPhase: FypPhase.fyp1,
+                  ),
+                ),
+              ),
+            ),
+          WheelItem(
+            icon: Icons.work_outline_rounded,
+            label: 'Internships',
+            sub: 'Opportunities',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const InternshipsSection()),
+            ),
+          ),
+        ];
+        if (items.isEmpty) return const SizedBox.shrink();
+        return SizedBox(height: 470, child: MenuWheel(items: items));
+      },
+    );
+  }
+}
+
+// ignore: unused_element
 class _ModulesSection extends StatelessWidget {
   const _ModulesSection({required this.student});
   final StudentRecord student;
@@ -1546,13 +1590,21 @@ class _ModulesSection extends StatelessWidget {
     return AnimatedBuilder(
       animation: FeatureVisibilityService.instance,
       builder: (context, _) {
+        // Hidden from the student portal for now (per request).
+        const hiddenForStudents = {
+          FeatureKey.grades,
+          FeatureKey.timeTable,
+          FeatureKey.classAttendance,
+          FeatureKey.courseMaterials,
+        };
         final visible = FeatureVisibilityService.instance
             .visibleFor(AppRole.student)
             // FYP and Internships have their own dedicated cards on the
             // dashboard, so skip them in the modules grid to avoid dupes.
             .where((meta) =>
                 meta.key != FeatureKey.fyp &&
-                meta.key != FeatureKey.internships)
+                meta.key != FeatureKey.internships &&
+                !hiddenForStudents.contains(meta.key))
             .toList();
         if (visible.isEmpty) return const SizedBox.shrink();
         final repository = AppRepositoryAccess.of(context);

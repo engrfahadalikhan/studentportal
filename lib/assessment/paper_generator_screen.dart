@@ -9,6 +9,7 @@ import '../ui/student_portal_shell.dart';
 import 'assessment_models.dart';
 import 'paper_generator_models.dart';
 import 'paper_generator_pdf_service.dart';
+import 'quiz_text_parser.dart';
 
 class PaperGeneratorScreen extends StatefulWidget {
   const PaperGeneratorScreen({
@@ -36,6 +37,7 @@ class PaperGeneratorScreen extends StatefulWidget {
 class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _teacherController;
+  final _nameController = TextEditingController();
   final _subjectController = TextEditingController();
   final _dateTimeController = TextEditingController();
   final _classController = TextEditingController();
@@ -72,6 +74,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
   @override
   void dispose() {
     _teacherController.dispose();
+    _nameController.dispose();
     _subjectController.dispose();
     _dateTimeController.dispose();
     _classController.dispose();
@@ -125,6 +128,103 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
       question.dispose();
     }
     _questionControllers.removeRange(count, _questionControllers.length);
+  }
+
+  // ---- Paste a whole quiz from WhatsApp / any text -------------------------
+
+  Future<void> _pasteQuizDialog() async {
+    final ctrl = TextEditingController();
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Paste quiz text'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Paste the whole quiz (from WhatsApp or anywhere). Number each '
+                'question (1. 2. …) and label options (A) B) … or a. b. …). '
+                'Mark the correct option with * or write "Answer: B".',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                minLines: 6,
+                maxLines: 16,
+                autofocus: true,
+                keyboardType: TextInputType.multiline,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: '1. What is 2 + 2?\nA) 3\nB) 4*\nC) 5\nD) 6',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Parse & add'),
+          ),
+        ],
+      ),
+    );
+    final text = ctrl.text;
+    ctrl.dispose();
+    if (go != true) return;
+    final parsed = parseQuizText(text);
+    if (parsed.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not find any questions in the pasted text.'),
+          ),
+        );
+      }
+      return;
+    }
+    _applyParsedQuestions(parsed);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Added ${parsed.length} question(s). Review the marks and the '
+            'correct option for each.',
+          ),
+        ),
+      );
+    }
+  }
+
+  void _applyParsedQuestions(List<ParsedQuizQuestion> qs) {
+    final list = qs.take(50).toList();
+    setState(() {
+      _questionCount = list.length;
+      _syncQuestionCount(list.length);
+      for (var i = 0; i < list.length; i++) {
+        final c = _questionControllers[i];
+        c.numberController.text = '${i + 1}';
+        c.textController.text = list[i].text;
+        if (c.marksController.text.trim().isEmpty) {
+          c.marksController.text = '1';
+        }
+        c.hasSubparts = false;
+        c.syncOptionsCount(list[i].options.length);
+        for (var j = 0; j < list[i].options.length; j++) {
+          c.optionControllers[j].text = list[i].options[j];
+        }
+        c.correctOptionIndex = list[i].correctIndex;
+      }
+      _generatedPdf = null;
+    });
   }
 
   Future<void> _pickDateTime() async {
@@ -346,18 +446,30 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
     );
     final durationMinutes = summedTimeMinutes > 0 ? summedTimeMinutes : 60;
 
-    final titleParts = [
-      _subjectController.text.trim(),
-      if (_dateTimeController.text.trim().isNotEmpty)
-        _dateTimeController.text.trim(),
-    ].where((part) => part.isNotEmpty).toList();
-    final title = titleParts.isEmpty
-        ? 'Generated ${widget.assessmentType.label.toLowerCase()}'
-        : titleParts.join(' • ');
+    // The teacher's chosen name is the assessment title (mandatory).
+    final name = _nameController.text.trim();
+    final subject = _subjectController.text.trim();
+    final title = name.isEmpty
+        ? (subject.isEmpty
+              ? 'Generated ${widget.assessmentType.label.toLowerCase()}'
+              : subject)
+        : (subject.isEmpty ? name : '$name — $subject');
 
     final extraClasses = _selectedCourses.length > 1
         ? '\nCovers classes: ${_classController.text.trim()}.'
         : '';
+
+    // Carry EVERY selected section/semester/program (comma-separated, distinct)
+    // so students of ALL chosen sections can open the paper — not just the
+    // first one. The student-side enrolment check splits these into tokens.
+    String joinDistinct(Iterable<String> values) => values
+        .map((v) => v.trim())
+        .where((v) => v.isNotEmpty)
+        .toSet()
+        .join(',');
+    final sections = joinDistinct(_selectedCourses.map((c) => c.section));
+    final semesters = joinDistinct(_selectedCourses.map((c) => c.semester));
+    final programs = joinDistinct(_selectedCourses.map((c) => c.program));
 
     final assessment = widget.repository.createAssessment(
       title: title,
@@ -367,7 +479,13 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
       instructions:
           '${_defaultInstructions(widget.assessmentType)}$extraClasses',
       questions: assessmentQuestions,
-      program: primaryCourse.program,
+      program: programs.isEmpty ? primaryCourse.program : programs,
+      semester: semesters,
+      section: sections,
+      expectedStudents: _selectedCourses.fold<int>(
+        0,
+        (sum, c) => sum + c.enrolledStudents,
+      ),
     );
 
     if (!mounted) {
@@ -494,6 +612,23 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
             _sectionTitle('Paper Details'),
             const SizedBox(height: 12),
             TextFormField(
+              controller: _nameController,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Assessment name *',
+                hintText: 'e.g. Quiz 1, Mid-term, Assignment 2',
+                prefixIcon: Icon(Icons.drive_file_rename_outline),
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Give this assessment a name.';
+                }
+                return null;
+              },
+              onChanged: (_) => setState(() => _generatedPdf = null),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
               controller: _teacherController,
               readOnly: true,
               decoration: const InputDecoration(
@@ -548,14 +683,23 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
             const SizedBox(height: 24),
             _sectionTitle('Questions Setup'),
             const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _pasteQuizDialog,
+                icon: const Icon(Icons.content_paste_go_rounded),
+                label: const Text('Paste quiz from WhatsApp / text'),
+              ),
+            ),
+            const SizedBox(height: 12),
             DropdownButtonFormField<int>(
-              initialValue: _questionCount,
+              initialValue: _questionCount > 50 ? 50 : _questionCount,
               decoration: const InputDecoration(
                 labelText: 'Total Number of Questions',
                 prefixIcon: Icon(Icons.format_list_numbered_rounded),
               ),
               items: List.generate(
-                15,
+                50,
                 (index) => DropdownMenuItem(
                   value: index + 1,
                   child: Text('${index + 1}'),

@@ -2,11 +2,17 @@ import 'package:flutter/material.dart';
 
 import '../assessment/assessment_models.dart';
 import '../features/admin_feature_controls_page.dart';
+import '../features/admin_data_sync_page.dart';
 import '../features/answer_sheet_tracker_page.dart';
+import '../fyp/fyp_groups_tabs.dart';
+import '../features/assessment_access_page.dart';
+import '../features/change_password_page.dart';
+import '../features/slot_collection_page.dart';
 import '../models/portal_session.dart';
 import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
+import '../services/device_binding_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_picker.dart';
@@ -155,6 +161,23 @@ class _AdminDesktopShellState extends State<_AdminDesktopShell> {
               onAnswerSheets: () => Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => const AnswerSheetTrackerPage(),
+                ),
+              ),
+              onSlotCollection: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const SlotCollectionPage(),
+                ),
+              ),
+              onAssessmentAccess: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      AssessmentAccessPage(repository: widget.repository),
+                ),
+              ),
+              onChangePassword: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      ChangePasswordPage(repository: widget.repository),
                 ),
               ),
               onAppearance: () => showAppearanceSheet(context),
@@ -343,6 +366,9 @@ class _AdminSidebar extends StatelessWidget {
     required this.onVerification,
     required this.onFeatureControls,
     required this.onAnswerSheets,
+    required this.onSlotCollection,
+    required this.onAssessmentAccess,
+    required this.onChangePassword,
     required this.onAppearance,
     required this.onLogout,
   });
@@ -354,6 +380,9 @@ class _AdminSidebar extends StatelessWidget {
   final VoidCallback onVerification;
   final VoidCallback onFeatureControls;
   final VoidCallback onAnswerSheets;
+  final VoidCallback onSlotCollection;
+  final VoidCallback onAssessmentAccess;
+  final VoidCallback onChangePassword;
   final VoidCallback onAppearance;
   final VoidCallback onLogout;
 
@@ -365,6 +394,9 @@ class _AdminSidebar extends StatelessWidget {
       ('Verification Access', Icons.verified_user_rounded, onVerification, 2),
       ('Feature Controls', Icons.tune_rounded, onFeatureControls, -1),
       ('Answer Sheets', Icons.assignment_returned_rounded, onAnswerSheets, -1),
+      ('Per-Slot Collection', Icons.fact_check_rounded, onSlotCollection, -1),
+      ('Teacher Access', Icons.assignment_ind_rounded, onAssessmentAccess, -1),
+      ('Change Password', Icons.password_rounded, onChangePassword, -1),
       ('Themes', Icons.palette_rounded, onAppearance, -1),
     ];
 
@@ -603,6 +635,7 @@ class _AdminDashboardState extends State<_AdminDashboard> {
               ),
               const SizedBox(height: 18),
               _QuickActionsRow(
+                repository: widget.repository,
                 onOpenFeatureControls: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => const AdminFeatureControlsPage(),
@@ -716,6 +749,7 @@ class _AdminDashboardState extends State<_AdminDashboard> {
             if (widget.desktop) ...[
               const SizedBox(height: 24),
               _QuickActionsRow(
+                repository: widget.repository,
                 onOpenFeatureControls: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => const AdminFeatureControlsPage(),
@@ -811,12 +845,16 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Admin login is username admin and password pdfpakistan. Student login is roll number and password 1234.',
+                      'Admin login is username admin (the admin password is set '
+                      'by you and is not saved on the device). Student login is '
+                      'roll number and password 1234.',
                     ),
                   ],
                 ),
               ),
             ),
+            const SizedBox(height: 24),
+            const _DeviceAssignmentCard(),
             const SizedBox(height: 24),
             Card(
               child: Padding(
@@ -1504,8 +1542,12 @@ class _HeroStat extends StatelessWidget {
 }
 
 class _QuickActionsRow extends StatelessWidget {
-  const _QuickActionsRow({required this.onOpenFeatureControls});
+  const _QuickActionsRow({
+    required this.onOpenFeatureControls,
+    required this.repository,
+  });
   final VoidCallback onOpenFeatureControls;
+  final AppRepository repository;
 
   @override
   Widget build(BuildContext context) {
@@ -1537,12 +1579,63 @@ class _QuickActionsRow extends StatelessWidget {
                 onTap: onOpenFeatureControls,
               ),
               _QuickActionData(
+                title: 'Data Share',
+                icon: Icons.sync_alt_rounded,
+                color: AppColors.amber600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => AdminDataSyncPage(repository: repository),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'FYP Groups',
+                icon: Icons.school_outlined,
+                color: AppColors.violet600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const FypAdminGroupsPage(),
+                  ),
+                ),
+              ),
+              _QuickActionData(
                 title: 'Answer Sheets',
                 icon: Icons.assignment_returned_outlined,
                 color: AppColors.teal600,
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => const AnswerSheetTrackerPage(),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Per-Slot Collection',
+                icon: Icons.fact_check_outlined,
+                color: AppColors.indigo600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const SlotCollectionPage(),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Teacher Access',
+                icon: Icons.assignment_ind_outlined,
+                color: AppColors.violet600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        AssessmentAccessPage(repository: repository),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Change Password',
+                icon: Icons.password_outlined,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ChangePasswordPage(repository: repository),
                   ),
                 ),
               ),
@@ -1636,5 +1729,194 @@ class _QuickActionCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Admin control: assign this device to one or more people, change or remove an
+/// assignment, or release it entirely.
+class _DeviceAssignmentCard extends StatelessWidget {
+  const _DeviceAssignmentCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: DeviceBindingService.instance,
+      builder: (context, _) {
+        final b = DeviceBindingService.instance;
+        final entries = b.entries;
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Device assignment',
+                        style: Theme.of(context).textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _addPerson(context),
+                      icon: const Icon(Icons.person_add_alt_1_outlined),
+                      label: const Text('Add person'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  entries.isEmpty
+                      ? 'Not assigned yet. The first student or teacher who logs '
+                            'in will claim this device — or add people below to '
+                            'allow several.'
+                      : 'Only these people (and Admin) can sign in on this '
+                            'device:',
+                ),
+                const SizedBox(height: 6),
+                for (final e in entries)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    leading: Icon(
+                      e.role == 'faculty'
+                          ? Icons.co_present_outlined
+                          : Icons.school_outlined,
+                    ),
+                    title: Text(
+                      e.label,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      '${e.role == 'faculty' ? 'Teacher' : 'Student'}  •  ${e.key}',
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close_rounded),
+                      tooltip: 'Remove',
+                      onPressed: () =>
+                          DeviceBindingService.instance.removePerson(e.key),
+                    ),
+                  ),
+                if (entries.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final ok = await _confirm(
+                        context,
+                        'Release this device?',
+                        'All assignments are cleared. The next student or '
+                            'teacher to log in will claim it.',
+                      );
+                      if (ok) await DeviceBindingService.instance.release();
+                    },
+                    icon: const Icon(Icons.lock_open_outlined),
+                    label: const Text('Release (clear all)'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _addPerson(BuildContext context) async {
+    var role = 'student';
+    final keyCtrl = TextEditingController();
+    final labelCtrl = TextEditingController();
+    final add = await showDialog<bool>(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setLocal) => AlertDialog(
+          title: const Text('Assign a person'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: role,
+                decoration: const InputDecoration(labelText: 'Role'),
+                items: const [
+                  DropdownMenuItem(value: 'student', child: Text('Student')),
+                  DropdownMenuItem(value: 'faculty', child: Text('Teacher')),
+                ],
+                onChanged: (v) => setLocal(() => role = v ?? 'student'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: keyCtrl,
+                decoration: InputDecoration(
+                  labelText: role == 'faculty'
+                      ? 'Teacher email / id'
+                      : 'Roll number',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: labelCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Display name (optional)',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (add == true) {
+      final ok = await DeviceBindingService.instance.addPerson(
+        role: role,
+        key: keyCtrl.text,
+        label: labelCtrl.text,
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ok
+                  ? 'Person assigned to this device.'
+                  : 'Enter a valid roll/id (or it is already assigned).',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<bool> _confirm(
+    BuildContext context,
+    String title,
+    String body,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
   }
 }

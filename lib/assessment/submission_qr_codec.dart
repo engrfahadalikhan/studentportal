@@ -39,6 +39,13 @@ class SubmissionQrCodec {
       'st': submission.status.index,
       'w': submission.warningCount,
       'p': submission.progress,
+      // Student identity for the teacher's class-wise marks lists (still
+      // answer-safe — no correct answers are ever included).
+      if (submission.studentName.isNotEmpty) 'n': submission.studentName,
+      if (submission.studentProgram.isNotEmpty) 'pr': submission.studentProgram,
+      if (submission.studentSemester.isNotEmpty)
+        'sm': submission.studentSemester,
+      if (submission.studentSection.isNotEmpty) 'sc': submission.studentSection,
       if (submission.flags.isNotEmpty) 'f': submission.flags,
       // Answers: {questionId: givenAnswer}. We cap each answer at 300 chars
       // to keep the QR manageable (long essays should be shared separately).
@@ -109,6 +116,10 @@ class SubmissionQrCodec {
       id: 'QR-${DateTime.now().millisecondsSinceEpoch}',
       assessmentId: _str(decoded['a']),
       studentId: _str(decoded['s']),
+      studentName: _str(decoded['n']),
+      studentProgram: _str(decoded['pr']),
+      studentSemester: _str(decoded['sm']),
+      studentSection: _str(decoded['sc']),
       status: status,
       answers: Map.unmodifiable(answers),
       marks: null,

@@ -47,7 +47,21 @@ class AppPalette {
 }
 
 /// The curated set of themes shown in the appearance picker.
+///
+/// `Gold` is first so it is the default (and the `paletteById` fallback): an
+/// elegant black + gold look on a warm cream page — dark antique-gold primary,
+/// brighter gold accent, near-black→deep-gold hero gradient.
 const List<AppPalette> kAppPalettes = [
+  AppPalette(
+    id: 'gold',
+    label: 'Gold',
+    primary: Color(0xFF8A6E16),
+    secondary: Color(0xFFC9A227),
+    soft: Color(0xFFFAF4E2),
+    border: Color(0xFFEADBB0),
+    heroFrom: Color(0xFF1B1813),
+    heroTo: Color(0xFF6E5713),
+  ),
   AppPalette(
     id: 'indigo',
     label: 'Indigo',
@@ -110,7 +124,7 @@ const List<AppPalette> kAppPalettes = [
   ),
 ];
 
-/// Look up a palette by id, falling back to the first (Indigo) when unknown.
+/// Look up a palette by id, falling back to the first (Gold) when unknown.
 AppPalette paletteById(String? id) => kAppPalettes.firstWhere(
       (palette) => palette.id == id,
       orElse: () => kAppPalettes.first,
