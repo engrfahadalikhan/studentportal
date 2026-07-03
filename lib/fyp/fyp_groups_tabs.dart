@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../assessment/registration_course_data.dart' as registration;
 import '../data/local_student_enrollments.dart';
 import '../models/student_record.dart';
+import '../services/cloud_sync_service.dart';
 import '../services/login_store.dart';
 import '../ui/student_portal_shell.dart';
 import 'fyp_group_models.dart';
@@ -308,6 +309,7 @@ class FypTeacherGroupsTab extends StatelessWidget {
     passCtrl.dispose();
     if (ok == true && picked.isNotEmpty) {
       _repo.setCoordinators(picked);
+      await CloudSyncService.instance.pushFypCoordinators(picked);
     }
   }
 
@@ -1955,6 +1957,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     );
     if (ok == true && picked.isNotEmpty) {
       _repo.setCoordinators(picked);
+      await CloudSyncService.instance.pushFypCoordinators(picked);
     }
   }
 

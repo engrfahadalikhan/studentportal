@@ -719,6 +719,40 @@ class CloudSyncService extends ChangeNotifier {
     });
   }
 
+  /// Saves FYP coordinator appointments directly to Firebase so every device
+  /// listening to the FYP workspace receives the coordinator list immediately.
+  Future<void> pushFypCoordinators(Iterable<String> names) async {
+    if (Firebase.apps.isEmpty) return;
+    final coordinators = <String>[];
+    final seen = <String>{};
+    for (final name in names) {
+      final trimmed = name.trim();
+      if (trimmed.isEmpty) continue;
+      final key = trimmed.toLowerCase();
+      if (seen.add(key)) coordinators.add(trimmed);
+    }
+    if (coordinators.isEmpty) return;
+    try {
+      final now = DateTime.now().toIso8601String();
+      await FirebaseFirestore.instance
+          .collection('cloud_fyp_groups')
+          .doc('_meta')
+          .set({
+            'id': '_meta',
+            'updated_at': now,
+            'coordinator': coordinators.join(', '),
+            'coordinators': coordinators,
+          }, SetOptions(merge: true));
+      lastSyncAt = DateTime.now();
+      if (_started || _fypOnlyStarted) status = 'On (auto)';
+      notifyListeners();
+    } catch (e) {
+      debugPrint('FYP coordinator push failed: $e');
+      status = 'Waiting for internetâ€¦';
+      notifyListeners();
+    }
+  }
+
   /// Uploads the dirty (or all) module tables. These tables are small, so
   /// they're pushed whole — doc id = row id keeps it duplicate-free.
   Future<void> pushModules({bool all = false}) async {
