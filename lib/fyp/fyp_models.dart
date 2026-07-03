@@ -340,6 +340,20 @@ extension FypEvaluationKindX on FypEvaluationKind {
   }
 }
 
+/// Examiner's final presentation decision for this evaluation.
+enum FypPresentationDecision { completed, repeatRequired }
+
+extension FypPresentationDecisionX on FypPresentationDecision {
+  String get label {
+    switch (this) {
+      case FypPresentationDecision.completed:
+        return 'Presentation completed';
+      case FypPresentationDecision.repeatRequired:
+        return 'Re-presentation required';
+    }
+  }
+}
+
 /// Each rubric dimension is scored 1–5.
 class FypRubricRow {
   const FypRubricRow({
@@ -365,27 +379,32 @@ class FypEvaluation {
   const FypEvaluation({
     required this.id,
     required this.kind,
+    this.groupId = '',
     required this.term,
     required this.projectTitle,
     required this.supervisorName,
     required this.examinerName,
     required this.members,
     required this.rubric,
+    this.remarks = '',
+    this.presentationDecision = FypPresentationDecision.completed,
     required this.submittedAt,
   });
 
   final String id;
   final FypEvaluationKind kind;
+  final String groupId;
   final String term;
   final String projectTitle;
   final String supervisorName;
   final String examinerName;
   final List<FypMember> members;
   final List<FypRubricRow> rubric;
+  final String remarks;
+  final FypPresentationDecision presentationDecision;
   final DateTime submittedAt;
 
-  int get marksObtained =>
-      rubric.fold<int>(0, (sum, row) => sum + row.score);
+  int get marksObtained => rubric.fold<int>(0, (sum, row) => sum + row.score);
 
   int get marksMax => rubric.fold<int>(0, (sum, row) => sum + row.maxMarks);
 }
@@ -399,14 +418,20 @@ List<FypRubricRow> defaultProposalRubric() {
     FypRubricRow(label: 'Subject Knowledge', maxMarks: 5),
     FypRubricRow(label: 'Scope', maxMarks: 10),
     FypRubricRow(label: 'Modules and Functionalities', maxMarks: 5),
-    FypRubricRow(label: 'Organization and Content of Presentation', maxMarks: 5),
     FypRubricRow(
-        label: 'Technical Implementation (knowledge of required tools)',
-        maxMarks: 5),
+      label: 'Organization and Content of Presentation',
+      maxMarks: 5,
+    ),
+    FypRubricRow(
+      label: 'Technical Implementation (knowledge of required tools)',
+      maxMarks: 5,
+    ),
     FypRubricRow(label: 'Project Overview, Methodology', maxMarks: 5),
     FypRubricRow(label: 'Presentation skills', maxMarks: 5),
     FypRubricRow(
-        label: 'Problem solving skills (Questions and Answers)', maxMarks: 5),
+      label: 'Problem solving skills (Questions and Answers)',
+      maxMarks: 5,
+    ),
   ];
 }
 
@@ -422,7 +447,9 @@ List<FypRubricRow> defaultSrsRubric() {
     FypRubricRow(label: 'UML Diagrams', maxMarks: 5),
     FypRubricRow(label: 'Presentation skills', maxMarks: 5),
     FypRubricRow(
-        label: 'Problem solving skills (Questions and Answers)', maxMarks: 5),
+      label: 'Problem solving skills (Questions and Answers)',
+      maxMarks: 5,
+    ),
   ];
 }
 
@@ -529,32 +556,29 @@ class FypSrs {
   final DateTime submittedAt;
 
   List<FypSrsSection> get sections => [
-        FypSrsSection(
-          heading: '1. Overall Product Description',
-          body: overallDescription,
-        ),
-        FypSrsSection(
-          heading: '2. External Interface Requirements',
-          body: externalInterfaces,
-        ),
-        FypSrsSection(
-          heading: '3. Functional Requirements',
-          body: functionalRequirements,
-        ),
-        FypSrsSection(
-          heading: '4. Non-Functional Requirements',
-          body: nonFunctionalRequirements,
-        ),
-        FypSrsSection(
-          heading: '5. Interface Requirements',
-          body: interfaceRequirements,
-        ),
-        FypSrsSection(heading: '6. Use Cases', body: useCases),
-        FypSrsSection(
-          heading: '7. UML Diagrams (notes)',
-          body: umlDiagramsNotes,
-        ),
-      ];
+    FypSrsSection(
+      heading: '1. Overall Product Description',
+      body: overallDescription,
+    ),
+    FypSrsSection(
+      heading: '2. External Interface Requirements',
+      body: externalInterfaces,
+    ),
+    FypSrsSection(
+      heading: '3. Functional Requirements',
+      body: functionalRequirements,
+    ),
+    FypSrsSection(
+      heading: '4. Non-Functional Requirements',
+      body: nonFunctionalRequirements,
+    ),
+    FypSrsSection(
+      heading: '5. Interface Requirements',
+      body: interfaceRequirements,
+    ),
+    FypSrsSection(heading: '6. Use Cases', body: useCases),
+    FypSrsSection(heading: '7. UML Diagrams (notes)', body: umlDiagramsNotes),
+  ];
 }
 
 // ============================================================================

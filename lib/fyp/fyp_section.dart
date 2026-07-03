@@ -1030,6 +1030,17 @@ class _EvaluationCard extends StatelessWidget {
             'Supervised by: ${evaluation.supervisorName}',
             style: const TextStyle(fontSize: 12.5),
           ),
+          Text(
+            'Presentation: ${evaluation.presentationDecision.label}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
+          if (evaluation.remarks.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Examiner remarks: ${evaluation.remarks}',
+              style: const TextStyle(fontSize: 12.5, height: 1.35),
+            ),
+          ],
           const SizedBox(height: 6),
           for (final row in evaluation.rubric)
             Padding(

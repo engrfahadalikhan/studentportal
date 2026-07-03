@@ -466,14 +466,26 @@ class FypRepository extends ChangeNotifier {
         .toList(growable: false);
   }
 
+  List<FypEvaluation> evaluationsForGroup(String groupId) {
+    final id = groupId.trim();
+    if (id.isEmpty) return const [];
+    return _evaluations
+        .where((evaluation) => evaluation.groupId.trim() == id)
+        .toList(growable: false);
+  }
+
   FypEvaluation createEvaluation({
     required FypEvaluationKind kind,
+    String groupId = '',
     required String term,
     required String projectTitle,
     required String supervisorName,
     required String examinerName,
     required List<FypMember> members,
     required List<FypRubricRow> rubric,
+    String remarks = '',
+    FypPresentationDecision presentationDecision =
+        FypPresentationDecision.completed,
   }) {
     final id = _newId(
       kind == FypEvaluationKind.proposal ? 'PEVAL' : 'SEVAL',
@@ -482,12 +494,15 @@ class FypRepository extends ChangeNotifier {
     final evaluation = FypEvaluation(
       id: id,
       kind: kind,
+      groupId: groupId.trim(),
       term: term,
       projectTitle: projectTitle,
       supervisorName: supervisorName,
       examinerName: examinerName,
       members: List.unmodifiable(members),
       rubric: List.unmodifiable(rubric),
+      remarks: remarks.trim(),
+      presentationDecision: presentationDecision,
       submittedAt: DateTime.now(),
     );
     _evaluations.insert(0, evaluation);
@@ -700,8 +715,22 @@ class FypRepository extends ChangeNotifier {
       )
       .toList(growable: false);
 
+  List<FypGroup> groupsForTeacher(String teacherName) => _groups
+      .where(
+        (g) =>
+            g.status != FypGroupStatus.rejected &&
+            (_matchesTeacher(g.supervisorName, teacherName) ||
+                _matchesTeacher(g.coSupervisorName, teacherName) ||
+                g.examiners.any((e) => _matchesTeacher(e, teacherName))),
+      )
+      .toList(growable: false);
+
   List<FypGroup> groupsWhereExaminer(String teacherName) => _groups
-      .where((g) => g.examiners.any((e) => _matchesTeacher(e, teacherName)))
+      .where(
+        (g) =>
+            g.status != FypGroupStatus.rejected &&
+            g.examiners.any((e) => _matchesTeacher(e, teacherName)),
+      )
       .toList(growable: false);
 
   FypGroup createGroup({

@@ -177,6 +177,7 @@ FypProposal proposalFromMap(Map<dynamic, dynamic> m) => FypProposal(
 Map<String, Object?> evaluationToMap(FypEvaluation e) => {
   'id': e.id,
   'kind': e.kind.name,
+  'groupId': e.groupId,
   'term': e.term,
   'projectTitle': e.projectTitle,
   'supervisorName': e.supervisorName,
@@ -186,12 +187,15 @@ Map<String, Object?> evaluationToMap(FypEvaluation e) => {
     for (final r in e.rubric)
       {'label': r.label, 'maxMarks': r.maxMarks, 'score': r.score},
   ],
+  'remarks': e.remarks,
+  'presentationDecision': e.presentationDecision.name,
   'submittedAt': e.submittedAt.toIso8601String(),
 };
 
 FypEvaluation evaluationFromMap(Map<dynamic, dynamic> m) => FypEvaluation(
   id: (m['id'] ?? '').toString(),
   kind: _enum(FypEvaluationKind.values, m['kind'], FypEvaluationKind.proposal),
+  groupId: (m['groupId'] ?? '').toString(),
   term: (m['term'] ?? '').toString(),
   projectTitle: (m['projectTitle'] ?? '').toString(),
   supervisorName: (m['supervisorName'] ?? '').toString(),
@@ -206,6 +210,12 @@ FypEvaluation evaluationFromMap(Map<dynamic, dynamic> m) => FypEvaluation(
           score: int.tryParse('${r['score'] ?? 0}') ?? 0,
         ),
   ],
+  remarks: (m['remarks'] ?? '').toString(),
+  presentationDecision: _enum(
+    FypPresentationDecision.values,
+    m['presentationDecision'],
+    FypPresentationDecision.completed,
+  ),
   submittedAt: _date(m['submittedAt']),
 );
 
@@ -268,11 +278,7 @@ FypEvaluationConsent consentFromMap(Map<dynamic, dynamic> m) =>
       members: _members(m['members']),
       approvedEvaluations: [
         for (final e in (m['approvedEvaluations'] as List? ?? const []))
-          _enum(
-            FypEvaluationType.values,
-            e,
-            FypEvaluationType.proposalDefense,
-          ),
+          _enum(FypEvaluationType.values, e, FypEvaluationType.proposalDefense),
       ],
       signedAt: _date(m['signedAt']),
     );
