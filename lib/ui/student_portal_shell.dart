@@ -6,6 +6,7 @@ import '../features/feature_catalog.dart';
 import '../features/feature_visibility_service.dart';
 import '../assessment/menu_wheel.dart';
 import '../fyp/fyp_models.dart';
+import '../fyp/fyp_repository.dart';
 import '../fyp/fyp_section.dart';
 import '../internships/internships_section.dart';
 import '../models/app_role.dart';
@@ -201,14 +202,14 @@ class _PortalTopBar extends StatelessWidget {
                 Text(
                   'AUST Student Portal',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 Text(
                   'Department of Computer Science',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -317,9 +318,7 @@ class _PortalBottomNav extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
       decoration: BoxDecoration(
         color: scheme.surface,
-        border: Border(
-          top: BorderSide(color: Theme.of(context).dividerColor),
-        ),
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
       ),
       child: Row(
         children: List.generate(labels.length, (index) {
@@ -346,8 +345,8 @@ class _PortalBottomNav extends StatelessWidget {
                       color: selected
                           ? scheme.primary
                           : (isDark
-                              ? scheme.onSurfaceVariant
-                              : PortalColors.navUnselected),
+                                ? scheme.onSurfaceVariant
+                                : PortalColors.navUnselected),
                       size: 24,
                     ),
                     const SizedBox(height: 4),
@@ -365,8 +364,8 @@ class _PortalBottomNav extends StatelessWidget {
                           color: selected
                               ? scheme.primary
                               : (isDark
-                                  ? scheme.onSurfaceVariant
-                                  : PortalColors.navUnselected),
+                                    ? scheme.onSurfaceVariant
+                                    : PortalColors.navUnselected),
                         ),
                       ),
                     ),
@@ -584,8 +583,8 @@ class AppRepositoryAccess extends InheritedWidget {
   final AppRepository repository;
 
   static AppRepository of(BuildContext context) {
-    final widget =
-        context.dependOnInheritedWidgetOfExactType<AppRepositoryAccess>();
+    final widget = context
+        .dependOnInheritedWidgetOfExactType<AppRepositoryAccess>();
     assert(widget != null, 'AppRepositoryAccess not found in widget tree');
     return widget!.repository;
   }
@@ -1519,7 +1518,10 @@ class _StudentMenuWheel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: FeatureVisibilityService.instance,
+      animation: Listenable.merge([
+        FeatureVisibilityService.instance,
+        FypRepository.instance,
+      ]),
       builder: (context, _) {
         const hiddenForStudents = {
           FeatureKey.grades,
@@ -1537,6 +1539,8 @@ class _StudentMenuWheel extends StatelessWidget {
             )
             .toList();
         final repository = AppRepositoryAccess.of(context);
+        final hasAssignedFypGroup =
+            FypRepository.instance.groupForRollNo(student.rollNo) != null;
         final items = <WheelItem>[
           for (final meta in visible)
             WheelItem(
@@ -1549,7 +1553,8 @@ class _StudentMenuWheel extends StatelessWidget {
                 student: student,
               ),
             ),
-          if (_shouldShowFyp(student.program, student.semester))
+          if (_shouldShowFyp(student.program, student.semester) ||
+              hasAssignedFypGroup)
             WheelItem(
               icon: Icons.school_outlined,
               label: 'FYP',
@@ -1601,10 +1606,12 @@ class _ModulesSection extends StatelessWidget {
             .visibleFor(AppRole.student)
             // FYP and Internships have their own dedicated cards on the
             // dashboard, so skip them in the modules grid to avoid dupes.
-            .where((meta) =>
-                meta.key != FeatureKey.fyp &&
-                meta.key != FeatureKey.internships &&
-                !hiddenForStudents.contains(meta.key))
+            .where(
+              (meta) =>
+                  meta.key != FeatureKey.fyp &&
+                  meta.key != FeatureKey.internships &&
+                  !hiddenForStudents.contains(meta.key),
+            )
             .toList();
         if (visible.isEmpty) return const SizedBox.shrink();
         final repository = AppRepositoryAccess.of(context);
@@ -1616,10 +1623,10 @@ class _ModulesSection extends StatelessWidget {
               Text(
                 'MODULES',
                 style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: const Color(0xFF5A5E72),
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                    ),
+                  color: const Color(0xFF5A5E72),
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.8,
+                ),
               ),
               const SizedBox(height: 10),
               ModuleCardGrid(
