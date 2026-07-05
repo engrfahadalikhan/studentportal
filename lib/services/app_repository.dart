@@ -246,6 +246,8 @@ class AppRepository extends ChangeNotifier {
       throw const PortalAuthException('Enter username first.');
     }
 
+    await CloudSyncService.instance.bootstrapLoginData();
+
     if (role == AppRole.admin) {
       final expected =
           LoginStore.instance.passwordOverride('admin') ?? 'pdfpakistan123#';
