@@ -74,6 +74,18 @@ class CloudSyncService extends ChangeNotifier {
     'exam_attendance_sheets': 'exam_sheets',
     'teacher_assignments': 'cloud_assignments',
     'student_submissions': 'cloud_submissions',
+    // Slot collection + answer-sheet tracker: deletes must propagate too.
+    'slots': 'slot_slots',
+    'slot_rows': 'slot_rows',
+    'slot_receipts': 'slot_receipts',
+    'slot_contributions': 'slot_contributions',
+    'paper_batches': 'cloud_paper_batches',
+  };
+  static const Set<String> _slotTombstoneTables = {
+    'slots',
+    'slot_rows',
+    'slot_receipts',
+    'slot_contributions',
   };
   final Set<String> _deletedIds = {};
 
@@ -88,6 +100,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Live repository so merged assessments/marks show immediately.
   AppRepository? repository;
   final Set<String> _dirtyModules = {};
+  final Map<String, String> _lastFypRowSignatures = {};
   Timer? _modulesTimer;
   bool _busyModules = false;
 
@@ -435,9 +448,18 @@ class CloudSyncService extends ChangeNotifier {
       if (table.isEmpty || id.isEmpty) continue;
       _deletedIds.add(id);
       try {
-        await _dash.deleteRowById(table, id);
-        if (table == 'teacher_assignments' || table == 'student_submissions') {
-          repository?.applyCloudRemoval(table, id);
+        if (_slotTombstoneTables.contains(table)) {
+          await _slotRepo.open();
+          await _slotRepo.deleteRowById(table, id);
+        } else if (table == 'paper_batches') {
+          await _ansRepo.open();
+          await _ansRepo.deleteBatch(id);
+        } else {
+          await _dash.deleteRowById(table, id);
+          if (table == 'teacher_assignments' ||
+              table == 'student_submissions') {
+            repository?.applyCloudRemoval(table, id);
+          }
         }
       } catch (e) {
         debugPrint('Tombstone apply failed: $e');
@@ -548,6 +570,7 @@ class CloudSyncService extends ChangeNotifier {
             (snap) {
               String? coordinator;
               final groups = <FypGroup>[];
+              final tombstones = <String, String>{};
               for (final c in snap.docChanges) {
                 if (c.type == DocumentChangeType.removed) continue;
                 final r = c.doc.data();
@@ -559,6 +582,11 @@ class CloudSyncService extends ChangeNotifier {
                       : (r['coordinator'] ?? '').toString();
                   continue;
                 }
+                if (r['deleted'] == true) {
+                  tombstones[(r['id'] ?? '').toString()] =
+                      (r['updated_at'] ?? '').toString();
+                  continue;
+                }
                 final raw = (r['data'] ?? '').toString();
                 if (raw.isEmpty) continue;
                 try {
@@ -568,11 +596,18 @@ class CloudSyncService extends ChangeNotifier {
                   // Skip malformed docs; never break sync.
                 }
               }
-              if (groups.isEmpty && coordinator == null) return;
-              FypRepository.instance.applyCloudGroups(
-                groups,
-                coordinator: coordinator,
-              );
+              if (tombstones.isNotEmpty) {
+                FypRepository.instance.applyCloudTombstones(groups: tombstones);
+              }
+              if (groups.isEmpty && coordinator == null && tombstones.isEmpty) {
+                return;
+              }
+              if (groups.isNotEmpty || coordinator != null) {
+                FypRepository.instance.applyCloudGroups(
+                  groups,
+                  coordinator: coordinator,
+                );
+              }
               lastSyncAt = DateTime.now();
               notifyListeners();
             },
@@ -589,19 +624,30 @@ class CloudSyncService extends ChangeNotifier {
           .snapshots()
           .listen((snap) {
             final panels = <FypPanel>[];
+            final tombstones = <String, String>{};
             for (final c in snap.docChanges) {
               if (c.type == DocumentChangeType.removed) continue;
-              final raw = (c.doc.data()?['data'] ?? '').toString();
+              final r = c.doc.data();
+              if (r == null) continue;
+              if (r['deleted'] == true) {
+                tombstones[(r['id'] ?? '').toString()] = (r['updated_at'] ?? '')
+                    .toString();
+                continue;
+              }
+              final raw = (r['data'] ?? '').toString();
               if (raw.isEmpty) continue;
               try {
                 final d = jsonDecode(raw);
                 if (d is Map) panels.add(FypPanel.fromJson(d));
               } catch (_) {}
             }
+            if (tombstones.isNotEmpty) {
+              FypRepository.instance.applyCloudTombstones(panels: tombstones);
+            }
             if (panels.isNotEmpty) {
               FypRepository.instance.applyCloudPanels(panels);
-              notifyListeners();
             }
+            if (panels.isNotEmpty || tombstones.isNotEmpty) notifyListeners();
           }, onError: (_) {}),
     );
     _examSubs.add(
@@ -610,17 +656,30 @@ class CloudSyncService extends ChangeNotifier {
           .snapshots()
           .listen((snap) {
             final meetings = <FypMeeting>[];
+            final tombstones = <String, String>{};
             for (final c in snap.docChanges) {
               if (c.type == DocumentChangeType.removed) continue;
-              final raw = (c.doc.data()?['data'] ?? '').toString();
+              final r = c.doc.data();
+              if (r == null) continue;
+              if (r['deleted'] == true) {
+                tombstones[(r['id'] ?? '').toString()] = (r['updated_at'] ?? '')
+                    .toString();
+                continue;
+              }
+              final raw = (r['data'] ?? '').toString();
               if (raw.isEmpty) continue;
               try {
                 final d = jsonDecode(raw);
                 if (d is Map) meetings.add(FypMeeting.fromJson(d));
               } catch (_) {}
             }
+            if (tombstones.isNotEmpty) {
+              FypRepository.instance.applyCloudTombstones(meetings: tombstones);
+            }
             if (meetings.isNotEmpty) {
               FypRepository.instance.applyCloudMeetings(meetings);
+            }
+            if (meetings.isNotEmpty || tombstones.isNotEmpty) {
               notifyListeners();
             }
           }, onError: (_) {}),
@@ -809,36 +868,64 @@ class CloudSyncService extends ChangeNotifier {
 
       if (targets.contains('fyp')) {
         final fypRepo = FypRepository.instance;
+        final liveGroupIds = {for (final g in fypRepo.groups) g.id};
+        final livePanelIds = {for (final p in fypRepo.panels) p.id};
+        final liveMeetingIds = {for (final m in fypRepo.meetings) m.id};
+        // Delete markers ride in the SAME doc id as the record: a tombstone
+        // overwrites the live doc (data blanked, deleted:true) so every device
+        // removes it; a genuine re-creation with a newer updated_at wins back.
+        // Both sides set `deleted` explicitly because _pushRows merges fields.
+        Map<String, Object?> tombstone(String id, String ts) => {
+          'id': id,
+          'updated_at': ts,
+          'data': '',
+          'deleted': true,
+        };
         final rows = <Map<String, Object?>>[
           for (final g in fypRepo.groups)
             {
               'id': g.id,
               'updated_at': g.updatedAt.toIso8601String(),
               'data': jsonEncode(g.toJson()),
+              'deleted': false,
             },
-          {
-            'id': '_meta',
-            'updated_at': DateTime.now().toIso8601String(),
-            'coordinator': fypRepo.coordinatorName,
-            'coordinators': fypRepo.coordinatorNames,
-          },
+          for (final e in fypRepo.deletedGroupTombstones.entries)
+            if (!liveGroupIds.contains(e.key)) tombstone(e.key, e.value),
+          // Only refresh the coordinator metadata when THIS device actually
+          // has coordinators set. Pushing an empty list here would wipe the
+          // coordinator for everyone — any phone that never set it (a student,
+          // or a teacher) could overwrite the cloud. That is exactly how the
+          // coordinator got lost before.
+          if (fypRepo.coordinatorNames.isNotEmpty)
+            {
+              'id': '_meta',
+              'updated_at': DateTime.now().toIso8601String(),
+              'coordinator': fypRepo.coordinatorName,
+              'coordinators': fypRepo.coordinatorNames,
+            },
         ];
-        await _pushRows(db, 'cloud_fyp_groups', rows);
-        await _pushRows(db, 'cloud_fyp_panels', [
+        await _pushChangedRows(db, 'cloud_fyp_groups', rows);
+        await _pushChangedRows(db, 'cloud_fyp_panels', [
           for (final p in fypRepo.panels)
             {
               'id': p.id,
               'updated_at': p.updatedAt.toIso8601String(),
               'data': jsonEncode(p.toJson()),
+              'deleted': false,
             },
+          for (final e in fypRepo.deletedPanelTombstones.entries)
+            if (!livePanelIds.contains(e.key)) tombstone(e.key, e.value),
         ]);
-        await _pushRows(db, 'cloud_fyp_meetings', [
+        await _pushChangedRows(db, 'cloud_fyp_meetings', [
           for (final m in fypRepo.meetings)
             {
               'id': m.id,
               'updated_at': m.updatedAt.toIso8601String(),
               'data': jsonEncode(m.toJson()),
+              'deleted': false,
             },
+          for (final e in fypRepo.deletedMeetingTombstones.entries)
+            if (!liveMeetingIds.contains(e.key)) tombstone(e.key, e.value),
         ]);
       }
 
@@ -851,6 +938,35 @@ class CloudSyncService extends ChangeNotifier {
       _busyModules = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _pushChangedRows(
+    FirebaseFirestore db,
+    String coll,
+    List<Map<String, Object?>> rows,
+  ) async {
+    final changed = <Map<String, Object?>>[];
+    final signatures = <String, String>{};
+    for (final row in rows) {
+      final id = (row['id'] ?? '').toString();
+      if (id.isEmpty) continue;
+      final cacheKey = '$coll/$id';
+      final signature = _fypRowSignature(row);
+      if (_lastFypRowSignatures[cacheKey] == signature) continue;
+      changed.add(row);
+      signatures[cacheKey] = signature;
+    }
+    if (changed.isEmpty) return;
+    await _pushRows(db, coll, changed);
+    _lastFypRowSignatures.addAll(signatures);
+  }
+
+  String _fypRowSignature(Map<String, Object?> row) {
+    final normalized = Map<String, Object?>.from(row);
+    if ((normalized['id'] ?? '').toString() == '_meta') {
+      normalized.remove('updated_at');
+    }
+    return jsonEncode(normalized);
   }
 
   Future<void> _pushRows(

@@ -28,6 +28,14 @@ class FypRepository extends ChangeNotifier {
   final List<FypPanel> _panels = [];
   final List<FypMeeting> _meetings = [];
 
+  // Tombstones: id → deletedAt (ISO). A delete must REACH other devices, not
+  // just vanish locally — without these, every other phone kept re-pushing the
+  // deleted record back into the cloud forever (the "old group still shows"
+  // bug). Persisted with the store and pushed to Firestore as `deleted` docs.
+  final Map<String, String> _deletedGroups = {};
+  final Map<String, String> _deletedPanels = {};
+  final Map<String, String> _deletedMeetings = {};
+
   // -------- read-only accessors -------------------------------------------
   List<FypSubmission> get submissions => List.unmodifiable(_submissions);
   List<FypIdea> get ideas => List.unmodifiable(_ideas);
@@ -40,6 +48,12 @@ class FypRepository extends ChangeNotifier {
   List<FypGroup> get groups => List.unmodifiable(_groups);
   List<FypPanel> get panels => List.unmodifiable(_panels);
   List<FypMeeting> get meetings => List.unmodifiable(_meetings);
+  Map<String, String> get deletedGroupTombstones =>
+      Map.unmodifiable(_deletedGroups);
+  Map<String, String> get deletedPanelTombstones =>
+      Map.unmodifiable(_deletedPanels);
+  Map<String, String> get deletedMeetingTombstones =>
+      Map.unmodifiable(_deletedMeetings);
 
   /// The designated FYP coordinator teacher names. Empty = not set.
   List<String> get coordinatorNames => List.unmodifiable(_coordinators);
@@ -99,7 +113,10 @@ class FypRepository extends ChangeNotifier {
         ..addAll(readList('srs', srsFromMap));
       _groups
         ..clear()
-        ..addAll(readList('groups', FypGroup.fromJson));
+        ..addAll(
+          // Self-heal groups saved with duplicate members by old versions.
+          readList('groups', FypGroup.fromJson).map(_dedupGroup),
+        );
       _panels
         ..clear()
         ..addAll(readList('panels', FypPanel.fromJson));
@@ -109,11 +126,53 @@ class FypRepository extends ChangeNotifier {
       _coordinators
         ..clear()
         ..addAll(_parseCoordinatorNames(decoded));
+      final deleted = decoded['deleted'];
+      if (deleted is Map) {
+        void readTombs(String key, Map<String, String> into) {
+          final m = deleted[key];
+          if (m is! Map) return;
+          m.forEach((k, v) {
+            final id = k.toString().trim();
+            if (id.isNotEmpty) into[id] = v.toString();
+          });
+        }
+
+        readTombs('groups', _deletedGroups);
+        readTombs('panels', _deletedPanels);
+        readTombs('meetings', _deletedMeetings);
+        // A tombstone must win over a record the store still carries.
+        _groups.removeWhere(
+          (g) => _tombstoneWins(_deletedGroups[g.id], g.updatedAt),
+        );
+        _panels.removeWhere(
+          (p) => _tombstoneWins(_deletedPanels[p.id], p.updatedAt),
+        );
+        _meetings.removeWhere(
+          (m) => _tombstoneWins(_deletedMeetings[m.id], m.updatedAt),
+        );
+      }
+      _purgeKnownBadGroups();
       notifyListeners();
     } catch (e) {
       // A corrupt store must never block startup.
       debugPrint('FYP store load failed: $e');
     }
+  }
+
+  /// IDs of specific bad groups that leaked before the tombstone system
+  /// existed and can't be cleaned from the cloud right now (Firestore quota).
+  /// "Vision Gaurd" (G1783166042476) was deleted on an OLD app version, so no
+  /// tombstone was ever created and every phone kept re-pulling it. Planting
+  /// the tombstone on load removes it on every updated device at launch, and it
+  /// is pushed to the cloud on the next sync. Tombstoning an id that no longer
+  /// exists is a harmless no-op — safe even if the group is already gone.
+  static const List<String> _knownBadGroupIds = ['G1783166042476'];
+
+  void _purgeKnownBadGroups() {
+    for (final id in _knownBadGroupIds) {
+      _deletedGroups.putIfAbsent(id, () => DateTime.now().toIso8601String());
+    }
+    _groups.removeWhere((g) => _knownBadGroupIds.contains(g.id));
   }
 
   Future<void> _persist() async {
@@ -134,6 +193,11 @@ class FypRepository extends ChangeNotifier {
         'groups': [for (final g in _groups) g.toJson()],
         'panels': [for (final p in _panels) p.toJson()],
         'meetings': [for (final m in _meetings) m.toJson()],
+        'deleted': {
+          'groups': _deletedGroups,
+          'panels': _deletedPanels,
+          'meetings': _deletedMeetings,
+        },
       };
       await file.writeAsString(jsonEncode(payload));
     } catch (e) {
@@ -695,16 +759,22 @@ class FypRepository extends ChangeNotifier {
   }
 
   FypGroup? groupForRollNo(String rollNo) {
+    // Prefer the NEWEST matching group — after a delete + re-create, a device
+    // that still carries the stale old group must show the new one.
+    FypGroup? best;
+    FypGroup? bestRejected;
     for (final g in _groups) {
-      if (_matchesRollNo(g.members, rollNo) &&
-          g.status != FypGroupStatus.rejected) {
-        return g;
+      if (!_matchesRollNo(g.members, rollNo)) continue;
+      if (g.status != FypGroupStatus.rejected) {
+        if (best == null || g.updatedAt.isAfter(best.updatedAt)) best = g;
+      } else {
+        if (bestRejected == null ||
+            g.updatedAt.isAfter(bestRejected.updatedAt)) {
+          bestRejected = g;
+        }
       }
     }
-    for (final g in _groups) {
-      if (_matchesRollNo(g.members, rollNo)) return g;
-    }
-    return null;
+    return best ?? bestRejected;
   }
 
   List<FypGroup> groupsForSupervisor(String teacherName) => _groups
@@ -774,7 +844,7 @@ class FypRepository extends ChangeNotifier {
       phase: phase,
       program: program,
       term: term.trim(),
-      members: List.unmodifiable(members),
+      members: List.unmodifiable(_dedupMembers(members)),
       supervisorName: supervisorName.trim(),
       coSupervisorName: coSupervisorName.trim(),
       createdByRole: createdByRole,
@@ -793,10 +863,43 @@ class FypRepository extends ChangeNotifier {
     return group;
   }
 
+  /// One student can never fill two member slots of the same group (a student
+  /// once picked himself twice in the dropdown). Keeps the first occurrence
+  /// per roll and re-numbers the serials.
+  List<FypMember> _dedupMembers(List<FypMember> members) {
+    final seen = <String>{};
+    final out = <FypMember>[];
+    for (final m in members) {
+      final key = m.rollNo.trim().toLowerCase();
+      if (key.isNotEmpty && !seen.add(key)) continue;
+      out.add(
+        FypMember(
+          serialNo: out.length + 1,
+          rollNo: m.rollNo,
+          name: m.name,
+          email: m.email,
+          cgpa: m.cgpa,
+          phone: m.phone,
+        ),
+      );
+    }
+    return out;
+  }
+
+  /// Returns the group with duplicate members removed, or the group untouched
+  /// when it is already clean (so keep-newest timestamps stay meaningful).
+  FypGroup _dedupGroup(FypGroup g) {
+    final deduped = _dedupMembers(g.members);
+    if (deduped.length == g.members.length) return g;
+    return g.copyWith(members: List.unmodifiable(deduped));
+  }
+
   void _updateGroup(String groupId, FypGroup Function(FypGroup) change) {
     final i = _groups.indexWhere((g) => g.id == groupId);
     if (i == -1) return;
-    _groups[i] = change(_groups[i]).copyWith(updatedAt: DateTime.now());
+    _groups[i] = _dedupGroup(
+      change(_groups[i]).copyWith(updatedAt: DateTime.now()),
+    );
     notifyListeners();
     onGroupsChanged?.call();
   }
@@ -911,17 +1014,71 @@ class FypRepository extends ChangeNotifier {
   }
 
   void deleteGroup(String groupId) {
+    _deletedGroups[groupId] = DateTime.now().toIso8601String();
     _groups.removeWhere((g) => g.id == groupId);
     notifyListeners();
     onGroupsChanged?.call();
+  }
+
+  /// True when a tombstone timestamp exists and is not older than the
+  /// record's own updatedAt (ties go to the tombstone — deletes must stick).
+  bool _tombstoneWins(String? tombstoneTs, DateTime recordUpdatedAt) {
+    if (tombstoneTs == null) return false;
+    final ts = DateTime.tryParse(tombstoneTs);
+    if (ts == null) return true;
+    return !recordUpdatedAt.isAfter(ts);
+  }
+
+  /// Cloud pull of delete markers: records the tombstones and removes any
+  /// matching local records (unless the record was re-created NEWER than the
+  /// delete). This is what finally makes a delete reach every device.
+  void applyCloudTombstones({
+    Map<String, String> groups = const {},
+    Map<String, String> panels = const {},
+    Map<String, String> meetings = const {},
+  }) {
+    var changed = false;
+    void take(Map<String, String> incoming, Map<String, String> into) {
+      incoming.forEach((id, ts) {
+        if (id.isEmpty) return;
+        final cur = into[id];
+        if (cur == null || cur.compareTo(ts) < 0) {
+          into[id] = ts;
+          changed = true;
+        }
+      });
+    }
+
+    take(groups, _deletedGroups);
+    take(panels, _deletedPanels);
+    take(meetings, _deletedMeetings);
+    final beforeCounts = _groups.length + _panels.length + _meetings.length;
+    _groups.removeWhere(
+      (g) => _tombstoneWins(_deletedGroups[g.id], g.updatedAt),
+    );
+    _panels.removeWhere(
+      (p) => _tombstoneWins(_deletedPanels[p.id], p.updatedAt),
+    );
+    _meetings.removeWhere(
+      (m) => _tombstoneWins(_deletedMeetings[m.id], m.updatedAt),
+    );
+    if (beforeCounts != _groups.length + _panels.length + _meetings.length) {
+      changed = true;
+    }
+    if (changed) notifyListeners();
   }
 
   /// Cloud pull: merge groups keep-newest by updatedAt (id = identity), and
   /// adopt coordinator names from the cloud metadata.
   void applyCloudGroups(List<FypGroup> incoming, {String? coordinator}) {
     var changed = false;
-    for (final g in incoming) {
+    for (final raw in incoming) {
+      // Old app versions can push duplicate-member groups — clean on arrival.
+      final g = _dedupGroup(raw);
       if (g.id.isEmpty) continue;
+      // Never resurrect a deleted group from a stale device's re-push.
+      if (_tombstoneWins(_deletedGroups[g.id], g.updatedAt)) continue;
+      if (_deletedGroups.remove(g.id) != null) changed = true;
       final i = _groups.indexWhere((e) => e.id == g.id);
       if (i == -1) {
         _groups.insert(0, g);
@@ -1051,6 +1208,7 @@ class FypRepository extends ChangeNotifier {
   }
 
   void deletePanel(String panelId) {
+    _deletedPanels[panelId] = DateTime.now().toIso8601String();
     _panels.removeWhere((p) => p.id == panelId);
     notifyListeners();
     onPanelsChanged?.call();
@@ -1069,6 +1227,8 @@ class FypRepository extends ChangeNotifier {
     var changed = false;
     for (final p in incoming) {
       if (p.id.isEmpty) continue;
+      if (_tombstoneWins(_deletedPanels[p.id], p.updatedAt)) continue;
+      if (_deletedPanels.remove(p.id) != null) changed = true;
       final i = _panels.indexWhere((e) => e.id == p.id);
       if (i == -1) {
         _panels.insert(0, p);
@@ -1117,6 +1277,7 @@ class FypRepository extends ChangeNotifier {
   }
 
   void deleteMeeting(String meetingId) {
+    _deletedMeetings[meetingId] = DateTime.now().toIso8601String();
     _meetings.removeWhere((m) => m.id == meetingId);
     notifyListeners();
     onMeetingsChanged?.call();
@@ -1126,6 +1287,8 @@ class FypRepository extends ChangeNotifier {
     var changed = false;
     for (final m in incoming) {
       if (m.id.isEmpty) continue;
+      if (_tombstoneWins(_deletedMeetings[m.id], m.updatedAt)) continue;
+      if (_deletedMeetings.remove(m.id) != null) changed = true;
       final i = _meetings.indexWhere((e) => e.id == m.id);
       if (i == -1) {
         _meetings.insert(0, m);
