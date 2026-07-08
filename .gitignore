@@ -48,3 +48,6 @@ app.*.map.json
 # Local emulator/debug captures
 emulator-*.png
 window.xml
+
+# Local server credentials
+hostinger_api/**/config.php

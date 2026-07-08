@@ -306,12 +306,16 @@ class ExamAttendanceStudent {
     this.chairNo = 0,
     this.classGroup = '',
     this.flag = '',
+    this.collectedBy = '',
   });
 
   final String studentId;
   final String studentName;
   final String rollNo;
   final String status;
+
+  /// The teacher who scanned/marked this student (stamped at scan time).
+  final String collectedBy;
 
   /// Extra note on a PRESENT student: '' (none), 'qr_problem' (the printed QR
   /// wouldn't scan, marked present by hand) or 'paper_not_returned' (present
@@ -342,6 +346,7 @@ class ExamAttendanceStudent {
       chairNo: chairNo,
       classGroup: classGroup,
       flag: flag ?? this.flag,
+      collectedBy: collectedBy,
     );
   }
 

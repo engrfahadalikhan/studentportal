@@ -7,11 +7,14 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../attendance/qr_attendance_section.dart';
+import '../fyp/fyp_codec.dart';
 import '../fyp/fyp_group_models.dart';
+import '../fyp/fyp_models.dart';
 import '../fyp/fyp_repository.dart';
 import 'answer_sheet_repository.dart';
 import 'app_repository.dart';
 import 'login_store.dart';
+import 'firebase_paths.dart';
 import 'slot_collection_repository.dart';
 import 'teacher_dashboard_database.dart';
 
@@ -33,6 +36,11 @@ import 'teacher_dashboard_database.dart';
 class CloudSyncService extends ChangeNotifier {
   CloudSyncService._();
   static final CloudSyncService instance = CloudSyncService._();
+
+  /// Temporary quota-protection mode: only FYP workspace data is allowed to
+  /// sync. Exam attendance, assignments, answer sheets, slots, and QR
+  /// attendance stay local until this is turned off in a later build.
+  static const bool _fypOnlySyncMode = true;
 
   // ---- QR attendance scans.
   static const _collection = 'attendance_scans';
@@ -100,7 +108,6 @@ class CloudSyncService extends ChangeNotifier {
   /// Live repository so merged assessments/marks show immediately.
   AppRepository? repository;
   final Set<String> _dirtyModules = {};
-  final Map<String, String> _lastFypRowSignatures = {};
   Timer? _modulesTimer;
   bool _busyModules = false;
 
@@ -117,9 +124,6 @@ class CloudSyncService extends ChangeNotifier {
   Future<void> start({AppRepository? repository}) async {
     if (repository != null) this.repository = repository;
     if (_started) {
-      unawaited(pushLocalScans());
-      unawaited(pushExamData());
-      unawaited(pushModules(all: true));
       return;
     }
     if (Firebase.apps.isEmpty) {
@@ -132,28 +136,31 @@ class CloudSyncService extends ChangeNotifier {
     notifyListeners();
     try {
       await _repo.open();
-      // Live pull: receive everyone's scans (Firestore only sends deltas
-      // after the first snapshot, and its offline cache persists them).
-      _sub = FirebaseFirestore.instance
-          .collection(_collection)
-          .snapshots()
-          .listen(
-            _onCloudChange,
-            onError: (Object e) {
-              status = 'Waiting for internet…';
-              notifyListeners();
-            },
-          );
-      await pushLocalScans();
-      await _startExam();
-      await _startModules();
-      await _startCredentials();
+      if (!_fypOnlySyncMode && _sub != null) {
+        // Live pull: receive everyone's scans (Firestore only sends deltas
+        // after the first snapshot, and its offline cache persists them).
+        _sub = FirebasePaths.collection(_collection).snapshots().listen(
+          _onCloudChange,
+          onError: (Object e) {
+            status = 'Waiting for internet…';
+            notifyListeners();
+          },
+        );
+      }
+      if (!_fypOnlySyncMode) {
+        await _startExam();
+        await _startModules();
+      }
+      LoginStore.instance.onOverrideChanged = () =>
+          unawaited(pushCredentials());
       // Any FYP group change (create / approve / reject / examiners) pushes.
-      FypRepository.instance.onGroupsChanged = () => pushModulesSoon('fyp');
-      FypRepository.instance.onPanelsChanged = () => pushModulesSoon('fyp');
-      FypRepository.instance.onMeetingsChanged = () => pushModulesSoon('fyp');
-      unawaited(pushModules(all: true));
-      status = 'On (auto)';
+      FypRepository.instance.onGroupsChanged = () => pushFypNow();
+      FypRepository.instance.onPanelsChanged = () => pushFypNow();
+      FypRepository.instance.onMeetingsChanged = () => pushFypNow();
+      FypRepository.instance.onVivaChanged = () => pushFypNow();
+      FypRepository.instance.onEvaluationsChanged = () => pushFypNow();
+      FypRepository.instance.onArtifactsChanged = () => pushModulesSoon('fyp');
+      status = 'On (on-demand)';
     } catch (e) {
       status = 'Error: $e';
     }
@@ -173,6 +180,9 @@ class CloudSyncService extends ChangeNotifier {
     FypRepository.instance.onGroupsChanged = null;
     FypRepository.instance.onPanelsChanged = null;
     FypRepository.instance.onMeetingsChanged = null;
+    FypRepository.instance.onVivaChanged = null;
+    FypRepository.instance.onEvaluationsChanged = null;
+    FypRepository.instance.onArtifactsChanged = null;
     LoginStore.instance.onOverrideChanged = null;
     _started = false;
     _examStarted = false;
@@ -189,6 +199,7 @@ class CloudSyncService extends ChangeNotifier {
   /// that only new/pending scans go up. Firestore queues writes offline and
   /// delivers them when internet returns.
   Future<void> pushLocalScans() async {
+    if (_fypOnlySyncMode) return;
     if (Firebase.apps.isEmpty || _busy) return;
     _busy = true;
     try {
@@ -211,9 +222,10 @@ class CloudSyncService extends ChangeNotifier {
         for (final s in chunk) {
           final data = s.toJson()
             ..['uploaded_by'] = me.isEmpty ? s.deviceName : me
-            ..['uploaded_at'] = FieldValue.serverTimestamp();
+            ..['uploaded_at'] = FieldValue.serverTimestamp()
+            ..addAll(FirebasePaths.clientWriteMeta());
           batch.set(
-            db.collection(_collection).doc(s.token),
+            FirebasePaths.doc(_collection, s.token),
             data,
             SetOptions(merge: true),
           );
@@ -271,35 +283,32 @@ class CloudSyncService extends ChangeNotifier {
 
   // ==================== Exam-attendance store (Summary / sheets) ============
   Future<void> _startExam() async {
+    if (_fypOnlySyncMode) return;
     if (_examStarted || Firebase.apps.isEmpty) return;
     _examStarted = true;
-    final db = FirebaseFirestore.instance;
+    _dash.onExamDataChanged = () => unawaited(pushExamData());
+    _dash.onExamDataRemoved = (items) => pushDeletions(items);
+    if (status.isNotEmpty) return;
     _examCollections.forEach((table, coll) {
       _examSubs.add(
-        db
-            .collection(coll)
-            .snapshots()
-            .listen(
-              (snap) => _onExamChange(table, snap),
-              onError: (Object e) {
-                status = 'Waiting for internet…';
-                notifyListeners();
-              },
-            ),
+        FirebasePaths.collection(coll).snapshots().listen(
+          (snap) => _onExamChange(table, snap),
+          onError: (Object e) {
+            status = 'Waiting for internet…';
+            notifyListeners();
+          },
+        ),
       );
     });
     // Tombstones: deletions made on any device are applied here too.
     _examSubs.add(
-      db
-          .collection(_deletedCollection)
-          .snapshots()
-          .listen(
-            _onDeletedChange,
-            onError: (Object e) {
-              status = 'Waiting for internet…';
-              notifyListeners();
-            },
-          ),
+      FirebasePaths.collection(_deletedCollection).snapshots().listen(
+        _onDeletedChange,
+        onError: (Object e) {
+          status = 'Waiting for internet…';
+          notifyListeners();
+        },
+      ),
     );
     // Push this device's exam data on every later change; propagate deletes.
     _dash.onExamDataChanged = () => unawaited(pushExamData());
@@ -338,6 +347,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Uploads exam-attendance rows changed since the last push (all on first
   /// run). Doc id = row id ⇒ re-uploads overwrite, never duplicate.
   Future<void> pushExamData() async {
+    if (_fypOnlySyncMode) return;
     if (Firebase.apps.isEmpty || _busyExam) return;
     _busyExam = true;
     try {
@@ -409,6 +419,7 @@ class CloudSyncService extends ChangeNotifier {
     for (final (_, id) in items) {
       _deletedIds.add(id);
     }
+    if (_fypOnlySyncMode) return;
     if (Firebase.apps.isEmpty || items.isEmpty) return;
     unawaited(() async {
       try {
@@ -420,11 +431,12 @@ class CloudSyncService extends ChangeNotifier {
           for (final (table, id) in chunk) {
             final coll = _tableToColl[table];
             if (coll == null || id.isEmpty) continue;
-            batch.delete(db.collection(coll).doc(id));
-            batch.set(db.collection(_deletedCollection).doc(id), {
+            batch.delete(FirebasePaths.doc(coll, id));
+            batch.set(FirebasePaths.doc(_deletedCollection, id), {
               't': table,
               'id': id,
               'at': now,
+              ...FirebasePaths.clientWriteMeta(),
             });
           }
           await batch.commit();
@@ -480,42 +492,40 @@ class CloudSyncService extends ChangeNotifier {
       table == 'slots' ? 'slot_slots' : table;
 
   Future<void> _startModules() async {
-    final db = FirebaseFirestore.instance;
+    if (_fypOnlySyncMode) return;
+    if (status.isNotEmpty) return;
 
     void listen(
       String coll,
       Future<void> Function(List<Map<String, Object?>> rows) apply,
     ) {
       _examSubs.add(
-        db
-            .collection(coll)
-            .snapshots()
-            .listen(
-              (snap) async {
-                final rows = <Map<String, Object?>>[];
-                for (final c in snap.docChanges) {
-                  if (c.type == DocumentChangeType.removed) continue;
-                  final d = c.doc.data();
-                  if (d == null) continue;
-                  if (_deletedIds.contains((d['id'] ?? '').toString())) {
-                    continue;
-                  }
-                  rows.add(Map<String, Object?>.from(d));
-                }
-                if (rows.isEmpty) return;
-                try {
-                  await apply(rows);
-                  lastSyncAt = DateTime.now();
-                  notifyListeners();
-                } catch (e) {
-                  debugPrint('Module pull $coll failed: $e');
-                }
-              },
-              onError: (Object e) {
-                status = 'Waiting for internet…';
-                notifyListeners();
-              },
-            ),
+        FirebasePaths.collection(coll).snapshots().listen(
+          (snap) async {
+            final rows = <Map<String, Object?>>[];
+            for (final c in snap.docChanges) {
+              if (c.type == DocumentChangeType.removed) continue;
+              final d = c.doc.data();
+              if (d == null) continue;
+              if (_deletedIds.contains((d['id'] ?? '').toString())) {
+                continue;
+              }
+              rows.add(Map<String, Object?>.from(d));
+            }
+            if (rows.isEmpty) return;
+            try {
+              await apply(rows);
+              lastSyncAt = DateTime.now();
+              notifyListeners();
+            } catch (e) {
+              debugPrint('Module pull $coll failed: $e');
+            }
+          },
+          onError: (Object e) {
+            status = 'Waiting for internet…';
+            notifyListeners();
+          },
+        ),
       );
     }
 
@@ -552,93 +562,162 @@ class CloudSyncService extends ChangeNotifier {
       });
     }
 
-    _listenFypGroups();
+    // FYP is pulled on demand from FYP screens, not listened to all day.
   }
 
   bool _fypListening = false;
 
   /// FYP groups (allotment workflow): docs carry the group JSON in `data`;
   /// the `_meta` doc carries the coordinator name.
+  // ignore: unused_element
   void _listenFypGroups() {
     if (_fypListening || Firebase.apps.isEmpty) return;
     _fypListening = true;
     _examSubs.add(
-      FirebaseFirestore.instance
-          .collection('cloud_fyp_groups')
-          .snapshots()
-          .listen(
-            (snap) {
-              _applyFypGroupRows([
-                for (final c in snap.docChanges)
-                  if (c.type != DocumentChangeType.removed &&
-                      c.doc.data() != null)
-                    Map<String, dynamic>.from(c.doc.data()!)
-                      ..putIfAbsent('id', () => c.doc.id),
-              ]);
-            },
-            onError: (Object e) {
-              status = 'Waiting for internet…';
-              notifyListeners();
-            },
-          ),
+      FirebasePaths.collection('cloud_fyp_groups').snapshots().listen(
+        (snap) {
+          _applyFypGroupRows([
+            for (final c in snap.docChanges)
+              if (c.type != DocumentChangeType.removed && c.doc.data() != null)
+                Map<String, dynamic>.from(c.doc.data()!)
+                  ..putIfAbsent('id', () => c.doc.id),
+          ]);
+        },
+        onError: (Object e) {
+          status = 'Waiting for internet…';
+          notifyListeners();
+        },
+      ),
     );
     // Examiner panels + meetings (docs carry JSON in `data`).
     _examSubs.add(
-      FirebaseFirestore.instance
-          .collection('cloud_fyp_panels')
-          .snapshots()
-          .listen((snap) {
-            _applyFypPanelRows([
-              for (final c in snap.docChanges)
-                if (c.type != DocumentChangeType.removed &&
-                    c.doc.data() != null)
-                  Map<String, dynamic>.from(c.doc.data()!)
-                    ..putIfAbsent('id', () => c.doc.id),
-            ]);
-          }, onError: (_) {}),
+      FirebasePaths.collection('cloud_fyp_panels').snapshots().listen((snap) {
+        _applyFypPanelRows([
+          for (final c in snap.docChanges)
+            if (c.type != DocumentChangeType.removed && c.doc.data() != null)
+              Map<String, dynamic>.from(c.doc.data()!)
+                ..putIfAbsent('id', () => c.doc.id),
+        ]);
+      }, onError: (_) {}),
     );
     _examSubs.add(
-      FirebaseFirestore.instance
-          .collection('cloud_fyp_meetings')
-          .snapshots()
-          .listen((snap) {
-            _applyFypMeetingRows([
-              for (final c in snap.docChanges)
-                if (c.type != DocumentChangeType.removed &&
-                    c.doc.data() != null)
-                  Map<String, dynamic>.from(c.doc.data()!)
-                    ..putIfAbsent('id', () => c.doc.id),
-            ]);
-          }, onError: (_) {}),
+      FirebasePaths.collection('cloud_fyp_meetings').snapshots().listen((snap) {
+        _applyFypMeetingRows([
+          for (final c in snap.docChanges)
+            if (c.type != DocumentChangeType.removed && c.doc.data() != null)
+              Map<String, dynamic>.from(c.doc.data()!)
+                ..putIfAbsent('id', () => c.doc.id),
+        ]);
+      }, onError: (_) {}),
     );
+    _examSubs.add(
+      FirebasePaths.collection('cloud_fyp_viva').snapshots().listen((snap) {
+        _applyFypVivaRows([
+          for (final c in snap.docChanges)
+            if (c.type != DocumentChangeType.removed && c.doc.data() != null)
+              Map<String, dynamic>.from(c.doc.data()!)
+                ..putIfAbsent('id', () => c.doc.id),
+        ]);
+      }, onError: (_) {}),
+    );
+    _examSubs.add(
+      FirebasePaths.collection('cloud_fyp_evaluations').snapshots().listen((
+        snap,
+      ) {
+        _applyFypEvaluationRows([
+          for (final c in snap.docChanges)
+            if (c.type != DocumentChangeType.removed && c.doc.data() != null)
+              Map<String, dynamic>.from(c.doc.data()!)
+                ..putIfAbsent('id', () => c.doc.id),
+        ]);
+      }, onError: (_) {}),
+    );
+    for (final kind in FypRepository.artifactKinds) {
+      _examSubs.add(
+        FirebasePaths.collection('cloud_fyp_$kind').snapshots().listen((snap) {
+          _applyFypArtifactRows(kind, [
+            for (final c in snap.docChanges)
+              if (c.type != DocumentChangeType.removed && c.doc.data() != null)
+                Map<String, dynamic>.from(c.doc.data()!)
+                  ..putIfAbsent('id', () => c.doc.id),
+          ]);
+        }, onError: (_) {}),
+      );
+    }
   }
 
-  Future<void> _pullFypWorkspaceOnce() async {
+  DateTime? _lastFypPullAt;
+
+  Future<void> pullFypWorkspace({bool force = false}) async {
     if (Firebase.apps.isEmpty) return;
-    final db = FirebaseFirestore.instance;
-    final groups = await db.collection('cloud_fyp_groups').get();
+    status = 'Pulling FYP...';
+    notifyListeners();
+    try {
+      await _pullFypWorkspaceOnce(force: force);
+      lastSyncAt = DateTime.now();
+      if (_started || _fypOnlyStarted) status = 'On (auto)';
+    } catch (e) {
+      debugPrint('FYP pull failed: $e');
+      status = 'Waiting for internet...';
+    } finally {
+      notifyListeners();
+    }
+  }
+
+  Future<void> _pullFypWorkspaceOnce({bool force = false}) async {
+    if (Firebase.apps.isEmpty) return;
+    final now = DateTime.now();
+    if (!force &&
+        _lastFypPullAt != null &&
+        now.difference(_lastFypPullAt!) < const Duration(seconds: 30)) {
+      return;
+    }
+    _lastFypPullAt = now;
+    final groups = await FirebasePaths.collection('cloud_fyp_groups').get();
     _applyFypGroupRows([
       for (final doc in groups.docs)
         Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
     ]);
-    final panels = await db.collection('cloud_fyp_panels').get();
+    final panels = await FirebasePaths.collection('cloud_fyp_panels').get();
     _applyFypPanelRows([
       for (final doc in panels.docs)
         Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
     ]);
-    final meetings = await db.collection('cloud_fyp_meetings').get();
+    final meetings = await FirebasePaths.collection('cloud_fyp_meetings').get();
     _applyFypMeetingRows([
       for (final doc in meetings.docs)
         Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
     ]);
+    final viva = await FirebasePaths.collection('cloud_fyp_viva').get();
+    _applyFypVivaRows([
+      for (final doc in viva.docs)
+        Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
+    ]);
+    final evals = await FirebasePaths.collection('cloud_fyp_evaluations').get();
+    _applyFypEvaluationRows([
+      for (final doc in evals.docs)
+        Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
+    ]);
+    for (final kind in FypRepository.artifactKinds) {
+      final docs = await FirebasePaths.collection('cloud_fyp_$kind').get();
+      _applyFypArtifactRows(kind, [
+        for (final doc in docs.docs)
+          Map<String, dynamic>.from(doc.data())
+            ..putIfAbsent('id', () => doc.id),
+      ]);
+    }
   }
 
   void _seedFypRowSignature(String coll, Map<String, dynamic> row) {
     final id = (row['id'] ?? '').toString();
     if (id.isEmpty) return;
-    _lastFypRowSignatures['$coll/$id'] = _fypRowSignature(
-      Map<String, Object?>.from(row),
-    );
+    // A row that just ARRIVED from the cloud must never be pushed back
+    // unchanged — seed its signature into the persisted push cache.
+    unawaited(() async {
+      final cache = await _sigCache();
+      cache['$coll/$id'] = _rowSignature(Map<String, Object?>.from(row));
+      _saveSigCacheSoon();
+    }());
   }
 
   String _coordinatorFromRow(Map<String, dynamic> row) {
@@ -747,22 +826,96 @@ class CloudSyncService extends ChangeNotifier {
     }
   }
 
+  void _applyFypVivaRows(Iterable<Map<String, dynamic>> rows) {
+    final sessions = <FypVivaSession>[];
+    final tombstones = <String, String>{};
+    for (final row in rows) {
+      _seedFypRowSignature('cloud_fyp_viva', row);
+      final id = (row['id'] ?? '').toString();
+      if (row['deleted'] == true) {
+        tombstones[id] = (row['updated_at'] ?? '').toString();
+        continue;
+      }
+      final raw = (row['data'] ?? '').toString();
+      if (raw.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) sessions.add(FypVivaSession.fromJson(decoded));
+      } catch (_) {
+        // Skip malformed docs; never break sync.
+      }
+    }
+    if (tombstones.isNotEmpty) {
+      FypRepository.instance.applyCloudTombstones(viva: tombstones);
+    }
+    if (sessions.isNotEmpty) {
+      FypRepository.instance.applyCloudVivaSessions(sessions);
+    }
+    if (sessions.isNotEmpty || tombstones.isNotEmpty) {
+      lastSyncAt = DateTime.now();
+      notifyListeners();
+    }
+  }
+
+  void _applyFypEvaluationRows(Iterable<Map<String, dynamic>> rows) {
+    final evaluations = <FypEvaluation>[];
+    for (final row in rows) {
+      _seedFypRowSignature('cloud_fyp_evaluations', row);
+      final raw = (row['data'] ?? '').toString();
+      if (raw.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) evaluations.add(evaluationFromMap(decoded));
+      } catch (_) {
+        // Skip malformed docs; never break sync.
+      }
+    }
+    if (evaluations.isNotEmpty) {
+      FypRepository.instance.applyCloudEvaluations(evaluations);
+      lastSyncAt = DateTime.now();
+      notifyListeners();
+    }
+  }
+
+  void _applyFypArtifactRows(String kind, Iterable<Map<String, dynamic>> rows) {
+    final maps = <Map<dynamic, dynamic>>[];
+    for (final row in rows) {
+      _seedFypRowSignature('cloud_fyp_$kind', row);
+      final raw = (row['data'] ?? '').toString();
+      if (raw.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) maps.add(decoded);
+      } catch (_) {
+        // Skip malformed docs; never break sync.
+      }
+    }
+    if (maps.isNotEmpty) {
+      FypRepository.instance.applyCloudArtifactMaps(kind, maps);
+      lastSyncAt = DateTime.now();
+      notifyListeners();
+    }
+  }
+
   bool _fypOnlyStarted = false;
 
   /// Pulls the cloud login/FYP workspace before the password check. This keeps
   /// a fresh install from accepting stale local defaults such as student 1234.
   Future<void> bootstrapLoginData({
     Duration timeout = const Duration(seconds: 5),
+    List<String> credentialKeys = const [],
+    bool includeFypWorkspace = false,
   }) async {
     if (Firebase.apps.isEmpty) return;
     status = 'Checking cloud login...';
     notifyListeners();
-    _listenFypGroups();
-    await _startCredentials(pushLocal: false);
+    LoginStore.instance.onOverrideChanged = () => unawaited(pushCredentials());
     try {
       await Future.wait([
-        _pullCredentialsOnce(),
-        _pullFypWorkspaceOnce(),
+        // Targeted single-doc reads when the caller knows whose password to
+        // check — a whole-collection pull per login burned the daily quota.
+        if (credentialKeys.isNotEmpty) _pullCredentialKeys(credentialKeys),
+        if (includeFypWorkspace) _pullFypWorkspaceOnce(),
       ]).timeout(timeout);
       lastSyncAt = DateTime.now();
       if (!_started && !_fypOnlyStarted) status = 'Ready';
@@ -781,20 +934,99 @@ class CloudSyncService extends ChangeNotifier {
   /// reaches the supervisor/coordinator, and approvals come back) + login
   /// passwords — none of the staff data (attendance, marks) is pulled here.
   Future<void> startFypOnly() async {
-    if (_started || _fypOnlyStarted || Firebase.apps.isEmpty) return;
+    if (_started || Firebase.apps.isEmpty) return;
+    if (_fypOnlyStarted) {
+      pushFypNow();
+      return;
+    }
     _fypOnlyStarted = true;
-    await bootstrapLoginData();
-    FypRepository.instance.onGroupsChanged = () => pushModulesSoon('fyp');
-    FypRepository.instance.onPanelsChanged = () => pushModulesSoon('fyp');
-    FypRepository.instance.onMeetingsChanged = () => pushModulesSoon('fyp');
+    FypRepository.instance.onGroupsChanged = () => pushFypNow();
+    FypRepository.instance.onPanelsChanged = () => pushFypNow();
+    FypRepository.instance.onMeetingsChanged = () => pushFypNow();
+    FypRepository.instance.onVivaChanged = () => pushFypNow();
+    FypRepository.instance.onEvaluationsChanged = () => pushFypNow();
+    FypRepository.instance.onArtifactsChanged = () => pushModulesSoon('fyp');
+    LoginStore.instance.onOverrideChanged = () => unawaited(pushCredentials());
+    unawaited(pushCurrentStudentFypGroup());
     status = 'On (auto)';
     notifyListeners();
+  }
+
+  /// Flushes FYP changes right away. On student devices it only uploads the
+  /// current student's own group, so old local staff/admin data cannot reappear.
+  void pushFypNow() {
+    if (_fypOnlyStarted && !_started && _currentLoginLooksStudent()) {
+      unawaited(pushCurrentStudentFypGroup());
+      return;
+    }
+    pushModulesSoon('fyp');
+    unawaited(pushModules());
+  }
+
+  bool _currentLoginLooksStudent() {
+    // The recorded role is authoritative — rolls are NOT always numeric
+    // (e.g. BSCS-F25-101), so the old digits-only regex misclassified those
+    // students and sent them down the full staff push path.
+    if (LoginStore.instance.lastRole == 'student') return true;
+    final who = LoginStore.instance.currentUserName.trim();
+    return RegExp(r'^\d+$').hasMatch(who);
+  }
+
+  Future<void> pushCurrentStudentFypGroup() async {
+    if (Firebase.apps.isEmpty) return;
+    final roll = LoginStore.instance.currentUserName.trim().toLowerCase();
+    if (roll.isEmpty) return;
+    final repo = FypRepository.instance;
+    final rows = <Map<String, Object?>>[];
+    for (final group in repo.groups) {
+      final createdByMe =
+          group.createdByRole == 'student' &&
+          group.createdByName.trim().toLowerCase() == roll;
+      final containsMe = group.members.any(
+        (member) => member.rollNo.trim().toLowerCase() == roll,
+      );
+      if (!createdByMe && !containsMe) continue;
+      if (repo.deletedGroupTombstones.containsKey(group.id)) continue;
+      rows.add({
+        'id': group.id,
+        'updated_at': group.updatedAt.toIso8601String(),
+        'data': jsonEncode(group.toJson()),
+        'deleted': false,
+      });
+    }
+    // A student deleting their own (rejected) group must propagate too —
+    // otherwise the coordinator keeps seeing it. Tombstones are tiny and the
+    // signature cache stops re-pushes within a session.
+    for (final e in repo.deletedGroupTombstones.entries) {
+      rows.add({
+        'id': e.key,
+        'updated_at': e.value,
+        'data': '',
+        'deleted': true,
+      });
+    }
+    if (rows.isEmpty) return;
+    try {
+      await _pushChangedRows(
+        FirebaseFirestore.instance,
+        'cloud_fyp_groups',
+        rows,
+      );
+      lastSyncAt = DateTime.now();
+      if (_started || _fypOnlyStarted) status = 'On (auto)';
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Student FYP push failed: $e');
+      status = 'Waiting for internet...';
+      notifyListeners();
+    }
   }
 
   // ==================== Login passwords (overrides) =========================
   String _credDocId(String key) =>
       base64Url.encode(utf8.encode(key)).replaceAll('=', '');
 
+  // ignore: unused_element
   Future<void> _startCredentials({bool pushLocal = true}) async {
     if (Firebase.apps.isEmpty) return;
     if (_credsStarted) {
@@ -803,35 +1035,42 @@ class CloudSyncService extends ChangeNotifier {
     }
     _credsStarted = true;
     _examSubs.add(
-      FirebaseFirestore.instance
-          .collection(_credentialsCollection)
-          .snapshots()
-          .listen(
-            (snap) async {
-              var applied = 0;
-              for (final c in snap.docChanges) {
-                if (c.type == DocumentChangeType.removed) continue;
-                final d = c.doc.data();
-                if (d == null) continue;
-                final key = (d['key'] ?? '').toString();
-                if (key.isEmpty) continue;
-                final ok = await LoginStore.instance.applySyncedOverride(
-                  key,
-                  (d['password'] ?? '').toString(),
-                  (d['ts'] ?? '').toString(),
-                );
-                if (ok) applied++;
-              }
-              if (applied > 0) {
-                lastSyncAt = DateTime.now();
-                notifyListeners();
-              }
-            },
-            onError: (Object e) {
-              status = 'Waiting for internet…';
-              notifyListeners();
-            },
-          ),
+      FirebasePaths.collection(_credentialsCollection).snapshots().listen(
+        (snap) async {
+          var applied = 0;
+          final cache = await _sigCache();
+          var seeded = false;
+          for (final c in snap.docChanges) {
+            if (c.type == DocumentChangeType.removed) continue;
+            final d = c.doc.data();
+            if (d == null) continue;
+            final key = (d['key'] ?? '').toString();
+            if (key.isEmpty) continue;
+            final password = (d['password'] ?? '').toString();
+            final ts = (d['ts'] ?? '').toString();
+            final ok = await LoginStore.instance.applySyncedOverride(
+              key,
+              password,
+              ts,
+            );
+            if (ok) {
+              applied++;
+              // Received from the cloud — never push this same value back.
+              cache['cred/${key.toLowerCase()}'] = '$password|$ts';
+              seeded = true;
+            }
+          }
+          if (seeded) _saveSigCacheSoon();
+          if (applied > 0) {
+            lastSyncAt = DateTime.now();
+            notifyListeners();
+          }
+        },
+        onError: (Object e) {
+          status = 'Waiting for internet…';
+          notifyListeners();
+        },
+      ),
     );
     LoginStore.instance.onOverrideChanged = () => unawaited(pushCredentials());
     if (pushLocal) {
@@ -844,11 +1083,40 @@ class CloudSyncService extends ChangeNotifier {
     }
   }
 
+  /// Fetches just the given credential docs (1 read each) and applies them
+  /// keep-newest — enough to validate one person's login.
+  Future<void> _pullCredentialKeys(List<String> keys) async {
+    if (Firebase.apps.isEmpty) return;
+    var applied = 0;
+    for (final key in keys) {
+      final k = key.trim().toLowerCase();
+      if (k.isEmpty) continue;
+      try {
+        final doc = await FirebasePaths.doc(
+          _credentialsCollection,
+          _credDocId(k),
+        ).get();
+        final d = doc.data();
+        if (d == null) continue;
+        final ok = await LoginStore.instance.applySyncedOverride(
+          k,
+          (d['password'] ?? '').toString(),
+          (d['ts'] ?? '').toString(),
+        );
+        if (ok) applied++;
+      } catch (_) {
+        // Offline / quota — validation falls back to what this phone holds.
+      }
+    }
+    if (applied > 0) {
+      lastSyncAt = DateTime.now();
+      notifyListeners();
+    }
+  }
+
   Future<void> _pullCredentialsOnce() async {
     if (Firebase.apps.isEmpty) return;
-    final snap = await FirebaseFirestore.instance
-        .collection(_credentialsCollection)
-        .get();
+    final snap = await FirebasePaths.collection(_credentialsCollection).get();
     var applied = 0;
     for (final doc in snap.docs) {
       final d = doc.data();
@@ -870,34 +1138,47 @@ class CloudSyncService extends ChangeNotifier {
   /// Uploads this device's personal password overrides (doc id = key, so it's
   /// idempotent; keep-newest by ts on pull). NOTE: passwords are plaintext —
   /// the app has no Firebase Auth, matching the rest of the open collections.
+  /// Settled overrides live in the PERSISTED signature cache (prefix `cred/`),
+  /// so repeat launches skip their read AND write entirely — previously every
+  /// app start burned one read per override per device.
   Future<void> pushCredentials() async {
     if (Firebase.apps.isEmpty) return;
     try {
+      final cache = await _sigCache();
       final db = FirebaseFirestore.instance;
       final overrides = LoginStore.instance.allPasswordOverrides();
       for (var i = 0; i < overrides.length; i += 400) {
         final chunk = overrides.skip(i).take(400).toList();
         final batch = db.batch();
         var writes = 0;
+        final done = <String, String>{};
         for (final o in chunk) {
-          final ref = db
-              .collection(_credentialsCollection)
-              .doc(_credDocId(o.key));
+          final sig = '${o.password}|${o.ts}';
+          if (cache['cred/${o.key}'] == sig) continue;
+          final ref = FirebasePaths.doc(
+            _credentialsCollection,
+            _credDocId(o.key),
+          );
           final remote = await ref.get();
           final remoteTs = (remote.data()?['ts'] ?? '').toString();
           if (remoteTs.isNotEmpty &&
               o.ts.isNotEmpty &&
               remoteTs.compareTo(o.ts) >= 0) {
+            done['cred/${o.key}'] = sig; // remote already newer — settled
             continue;
           }
           batch.set(ref, {
             'key': o.key,
             'password': o.password,
             'ts': o.ts,
+            ...FirebasePaths.clientWriteMeta(),
           }, SetOptions(merge: true));
+          done['cred/${o.key}'] = sig;
           writes++;
         }
         if (writes > 0) await batch.commit();
+        cache.addAll(done);
+        if (done.isNotEmpty) _saveSigCacheSoon();
       }
     } catch (e) {
       debugPrint('Credential push failed: $e');
@@ -907,6 +1188,7 @@ class CloudSyncService extends ChangeNotifier {
   /// Marks a module's data dirty and pushes it shortly (debounced), so rapid
   /// scans batch into one upload.
   void pushModulesSoon(String module) {
+    if (_fypOnlySyncMode && module != 'fyp') return;
     _dirtyModules.add(module);
     if ((!_started && !_fypOnlyStarted) || Firebase.apps.isEmpty) return;
     _modulesTimer?.cancel();
@@ -930,15 +1212,13 @@ class CloudSyncService extends ChangeNotifier {
     if (coordinators.isEmpty) return;
     try {
       final now = DateTime.now().toIso8601String();
-      await FirebaseFirestore.instance
-          .collection('cloud_fyp_groups')
-          .doc('_meta')
-          .set({
-            'id': '_meta',
-            'updated_at': now,
-            'coordinator': coordinators.join(', '),
-            'coordinators': coordinators,
-          }, SetOptions(merge: true));
+      await FirebasePaths.doc('cloud_fyp_groups', '_meta').set({
+        'id': '_meta',
+        'updated_at': now,
+        'coordinator': coordinators.join(', '),
+        'coordinators': coordinators,
+        ...FirebasePaths.clientWriteMeta(),
+      }, SetOptions(merge: true));
       lastSyncAt = DateTime.now();
       if (_started || _fypOnlyStarted) status = 'On (auto)';
       notifyListeners();
@@ -955,9 +1235,12 @@ class CloudSyncService extends ChangeNotifier {
     if (Firebase.apps.isEmpty || _busyModules) return;
     _busyModules = true;
     try {
-      final targets = all
+      final rawTargets = all
           ? {'assessments', 'answerSheets', 'slots', 'fyp'}
           : Set<String>.from(_dirtyModules);
+      final targets = _fypOnlySyncMode
+          ? rawTargets.where((module) => module == 'fyp').toSet()
+          : rawTargets;
       _dirtyModules.clear();
       if (targets.isEmpty) return;
       final db = FirebaseFirestore.instance;
@@ -971,14 +1254,14 @@ class CloudSyncService extends ChangeNotifier {
             (await _dash.examRowsSince('student_submissions', '', null))
                 .where((r) => !_deletedIds.contains((r['id'] ?? '').toString()))
                 .toList();
-        await _pushRows(db, 'cloud_assignments', assigns);
-        await _pushRows(db, 'cloud_submissions', subs);
+        await _pushChangedRows(db, 'cloud_assignments', assigns);
+        await _pushChangedRows(db, 'cloud_submissions', subs);
       }
 
       if (targets.contains('answerSheets')) {
         await _ansRepo.open();
         final dump = await _ansRepo.exportBundle();
-        await _pushRows(
+        await _pushChangedRows(
           db,
           'cloud_paper_batches',
           ((dump['paper_batches'] as List?) ?? const [])
@@ -992,7 +1275,7 @@ class CloudSyncService extends ChangeNotifier {
         await _slotRepo.open();
         final dump = await _slotRepo.exportBundle();
         for (final table in _slotTables) {
-          await _pushRows(
+          await _pushChangedRows(
             db,
             _slotColl(table),
             ((dump[table] as List?) ?? const [])
@@ -1064,6 +1347,34 @@ class CloudSyncService extends ChangeNotifier {
           for (final e in fypRepo.deletedMeetingTombstones.entries)
             if (!liveMeetingIds.contains(e.key)) tombstone(e.key, e.value),
         ]);
+        final liveVivaIds = {for (final v in fypRepo.vivaSessions) v.id};
+        await _pushChangedRows(db, 'cloud_fyp_viva', [
+          for (final v in fypRepo.vivaSessions)
+            {
+              'id': v.id,
+              'updated_at': v.updatedAt.toIso8601String(),
+              'data': jsonEncode(v.toJson()),
+              'deleted': false,
+            },
+          for (final e in fypRepo.deletedVivaTombstones.entries)
+            if (!liveVivaIds.contains(e.key)) tombstone(e.key, e.value),
+        ]);
+        await _pushChangedRows(db, 'cloud_fyp_evaluations', [
+          for (final ev in fypRepo.evaluations)
+            {
+              'id': ev.id,
+              'updated_at': ev.submittedAt.toIso8601String(),
+              'data': jsonEncode(evaluationToMap(ev)),
+              'deleted': false,
+            },
+        ]);
+        for (final kind in FypRepository.artifactKinds) {
+          await _pushChangedRows(
+            db,
+            'cloud_fyp_$kind',
+            fypRepo.artifactRows(kind),
+          );
+        }
       }
 
       lastSyncAt = DateTime.now();
@@ -1077,28 +1388,72 @@ class CloudSyncService extends ChangeNotifier {
     }
   }
 
+  // -------- push signature cache (PERSISTED) --------------------------------
+  // Every doc pushed gets a content signature; identical content is never
+  // written again — not even after an app restart. Without persistence every
+  // launch re-pushed whole tables, and those no-op writes both burned the
+  // daily write quota AND triggered a read on every listening phone.
+  static const _kPushSigCache = 'push_sig_cache_v1';
+  Map<String, String>? _pushSigCache;
+  Timer? _sigSaveTimer;
+
+  Future<Map<String, String>> _sigCache() async {
+    final cached = _pushSigCache;
+    if (cached != null) return cached;
+    final prefs = await SharedPreferences.getInstance();
+    final out = <String, String>{};
+    final raw = prefs.getString(_kPushSigCache);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final d = jsonDecode(raw);
+        if (d is Map) {
+          d.forEach((k, v) => out[k.toString()] = v.toString());
+        }
+      } catch (_) {}
+    }
+    _pushSigCache = out;
+    return out;
+  }
+
+  void _saveSigCacheSoon() {
+    _sigSaveTimer?.cancel();
+    _sigSaveTimer = Timer(const Duration(seconds: 3), () async {
+      final cache = _pushSigCache;
+      if (cache == null) return;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_kPushSigCache, jsonEncode(cache));
+      } catch (_) {}
+    });
+  }
+
   Future<void> _pushChangedRows(
     FirebaseFirestore db,
     String coll,
     List<Map<String, Object?>> rows,
   ) async {
+    final cache = await _sigCache();
     final changed = <Map<String, Object?>>[];
     final signatures = <String, String>{};
     for (final row in rows) {
       final id = (row['id'] ?? '').toString();
       if (id.isEmpty) continue;
       final cacheKey = '$coll/$id';
-      final signature = _fypRowSignature(row);
-      if (_lastFypRowSignatures[cacheKey] == signature) continue;
+      final signature = _rowSignature(row);
+      if (cache[cacheKey] == signature) continue;
       changed.add(row);
       signatures[cacheKey] = signature;
     }
     if (changed.isEmpty) return;
     await _pushRows(db, coll, changed);
-    _lastFypRowSignatures.addAll(signatures);
+    cache.addAll(signatures);
+    // Safety valve: an unbounded cache would bloat SharedPreferences. Clearing
+    // costs at most one full (deduped) re-push.
+    if (cache.length > 6000) cache.clear();
+    _saveSigCacheSoon();
   }
 
-  String _fypRowSignature(Map<String, Object?> row) {
+  String _rowSignature(Map<String, Object?> row) {
     final normalized = Map<String, Object?>.from(row);
     if ((normalized['id'] ?? '').toString() == '_meta') {
       normalized.remove('updated_at');
@@ -1118,8 +1473,8 @@ class CloudSyncService extends ChangeNotifier {
         final id = (r['id'] ?? '').toString();
         if (id.isEmpty) continue;
         batch.set(
-          db.collection(coll).doc(id),
-          Map<String, dynamic>.from(r),
+          FirebasePaths.doc(coll, id),
+          Map<String, dynamic>.from(r)..addAll(FirebasePaths.clientWriteMeta()),
           SetOptions(merge: true),
         );
       }

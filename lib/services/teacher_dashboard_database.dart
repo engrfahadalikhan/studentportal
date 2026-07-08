@@ -1944,7 +1944,8 @@ class TeacherDashboardDatabase {
     final rows = await db.rawQuery(
       '''
       SELECT s.id, s.name, s.roll_no, r.status,
-             r.seat_label, r.col_no, r.chair_no, r.class_group, r.flag
+             r.seat_label, r.col_no, r.chair_no, r.class_group, r.flag,
+             r.collected_by
       FROM exam_attendance_records r
       JOIN students s ON s.id = r.student_id
       WHERE r.sheet_id = ?
@@ -1965,6 +1966,7 @@ class TeacherDashboardDatabase {
             chairNo: _intValue(row['chair_no']),
             classGroup: row['class_group']?.toString() ?? '',
             flag: row['flag']?.toString() ?? '',
+            collectedBy: row['collected_by']?.toString() ?? '',
           ),
         )
         .toList(growable: false);
@@ -2999,6 +3001,8 @@ class TeacherDashboardDatabase {
               'status': s.status == 'present' ? 'present' : 'absent',
               'seat': s.seatLabel,
               'class': s.classGroup,
+              // Which teacher scanned this student — rides into csexam.
+              'by': s.collectedBy,
             },
         ],
         'ufm': [

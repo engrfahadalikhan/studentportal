@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../services/answer_sheet_repository.dart';
+import '../services/cloud_sync_service.dart';
 import '../ui/student_portal_shell.dart';
 
 /// Admin module: track answer-sheet custody. Scan a csexam "program stats" /
@@ -92,6 +93,43 @@ class _AnswerSheetTrackerPageState extends State<AnswerSheetTrackerPage> {
     }
   }
 
+  Future<void> _openManualEntry() async {
+    final result = await showModalBottomSheet<_ManualBatchInput>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (_) => _ManualEntrySheet(isReturn: _isReturn),
+    );
+    if (result == null) return;
+    try {
+      final scanResult = await _repository.recordManualBatch(
+        program: result.program,
+        subject: result.subject,
+        faculty: result.faculty,
+        hall: result.hall,
+        examDate: result.examDate,
+        shift: result.shift,
+        count: result.count,
+        isReturn: _isReturn,
+      );
+      await _reload();
+      if (!mounted) return;
+      setState(() {
+        _ok = true;
+        _message = scanResult.message;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _ok = false;
+        _message = error is FormatException ? error.message : error.toString();
+      });
+    }
+  }
+
   void _onDetect(BarcodeCapture capture) {
     final now = DateTime.now();
     final raw = capture.barcodes
@@ -130,7 +168,8 @@ class _AnswerSheetTrackerPageState extends State<AnswerSheetTrackerPage> {
       ),
     );
     if (yes != true) return;
-    await _repository.clearAll();
+    final items = await _repository.clearAll();
+    CloudSyncService.instance.pushDeletions(items);
     await _reload();
   }
 
@@ -177,6 +216,17 @@ class _AnswerSheetTrackerPageState extends State<AnswerSheetTrackerPage> {
                   },
                   message: _message,
                   ok: _ok,
+                ),
+                const SizedBox(height: 12),
+                // Fallback when a QR will not scan — type the bundle by hand.
+                OutlinedButton.icon(
+                  onPressed: _openManualEntry,
+                  icon: const Icon(Icons.keyboard_rounded, size: 18),
+                  label: Text(
+                    _isReturn
+                        ? 'Manual entry — return a bundle'
+                        : 'Manual entry — issue a bundle',
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -240,6 +290,210 @@ class _AnswerSheetTrackerPageState extends State<AnswerSheetTrackerPage> {
   Future<void> _toggle(PaperBatch batch) async {
     await _repository.toggleStatus(batch.id);
     await _reload();
+  }
+}
+
+/// What the manual-entry sheet returns — the same fields a scanned bundle has.
+class _ManualBatchInput {
+  const _ManualBatchInput({
+    required this.faculty,
+    required this.program,
+    required this.subject,
+    required this.hall,
+    required this.examDate,
+    required this.shift,
+    required this.count,
+  });
+
+  final String faculty;
+  final String program;
+  final String subject;
+  final String hall;
+  final String examDate;
+  final String shift;
+  final int count;
+}
+
+/// Type a bundle by hand when the QR will not scan. Works for both Issue and
+/// Return — the mode is decided by the page's current toggle.
+class _ManualEntrySheet extends StatefulWidget {
+  const _ManualEntrySheet({required this.isReturn});
+
+  final bool isReturn;
+
+  @override
+  State<_ManualEntrySheet> createState() => _ManualEntrySheetState();
+}
+
+class _ManualEntrySheetState extends State<_ManualEntrySheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _faculty = TextEditingController();
+  final _program = TextEditingController();
+  final _subject = TextEditingController();
+  final _hall = TextEditingController();
+  final _date = TextEditingController();
+  final _shift = TextEditingController();
+  final _count = TextEditingController();
+
+  @override
+  void dispose() {
+    _faculty.dispose();
+    _program.dispose();
+    _subject.dispose();
+    _hall.dispose();
+    _date.dispose();
+    _shift.dispose();
+    _count.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    Navigator.pop(
+      context,
+      _ManualBatchInput(
+        faculty: _faculty.text.trim(),
+        program: _program.text.trim(),
+        subject: _subject.text.trim(),
+        hall: _hall.text.trim(),
+        examDate: _date.text.trim(),
+        shift: _shift.text.trim(),
+        count: int.tryParse(_count.text.trim()) ?? 0,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    final verb = widget.isReturn ? 'Return' : 'Issue';
+    return Padding(
+      padding: EdgeInsets.fromLTRB(18, 18, 18, bottom + 18),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  widget.isReturn
+                      ? Icons.move_to_inbox_rounded
+                      : Icons.outbox_rounded,
+                  color: PortalColors.brandBlue,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Manual entry — $verb bundle',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.isReturn
+                  ? 'Type the bundle the teacher is returning after marking.'
+                  : 'Type the bundle you are handing to the teacher.',
+              style: const TextStyle(
+                color: PortalColors.subtleText,
+                fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _faculty,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Teacher / faculty',
+                prefixIcon: Icon(Icons.person_outline_rounded),
+              ),
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Required' : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _program,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                labelText: 'Program',
+                hintText: 'e.g. BSCS',
+                prefixIcon: Icon(Icons.school_outlined),
+              ),
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Required' : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _subject,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Subject',
+                prefixIcon: Icon(Icons.menu_book_outlined),
+              ),
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Required' : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _count,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Number of papers',
+                prefixIcon: Icon(Icons.tag_rounded),
+              ),
+              validator: (v) {
+                final n = int.tryParse((v ?? '').trim());
+                if (n == null || n <= 0) return 'Enter a number greater than 0';
+                return null;
+              },
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _hall,
+                    decoration: const InputDecoration(
+                      labelText: 'Hall (optional)',
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextFormField(
+                    controller: _shift,
+                    decoration: const InputDecoration(
+                      labelText: 'Shift (optional)',
+                      isDense: true,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _date,
+              decoration: const InputDecoration(
+                labelText: 'Exam date (optional)',
+                hintText: 'e.g. 22-Jun-2026',
+                prefixIcon: Icon(Icons.event_outlined),
+              ),
+            ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: _submit,
+              icon: const Icon(Icons.check_rounded, size: 18),
+              label: Text('$verb this bundle'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

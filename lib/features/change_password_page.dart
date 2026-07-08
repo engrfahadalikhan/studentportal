@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../services/app_repository.dart';
+import '../services/device_binding_service.dart';
 import '../services/login_store.dart';
 import '../ui/student_portal_shell.dart';
 
 /// Lets the currently logged-in user (admin / teacher / student) change their
 /// password. The new password is stored as an override that sign-in honors over
-/// the built-in default (pdfpakistan / aust1234 / 1234).
+/// the built-in default (pdfpakistan / aust12345 / 1234).
 class ChangePasswordPage extends StatefulWidget {
   const ChangePasswordPage({super.key, required this.repository});
 
@@ -31,6 +32,11 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
   bool _custom = false;
   String _customName = '';
 
+  /// On an admin-blessed OPEN device, a teacher/student portal was opened
+  /// without their password, so the admin can reset it here WITHOUT typing the
+  /// old one. The admin's own password is never bypassed.
+  bool _directReset = false;
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +52,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
       _who = '';
       return;
     }
+    _directReset = DeviceBindingService.instance.allowAll && !s.isAdmin;
     if (s.isAdmin) {
       _key = 'admin';
       _currentPassword = store.passwordOverride(_key) ?? 'pdfpakistan123#';
@@ -62,7 +69,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
             store.passwordOverride(_key) ?? (c?.password ?? t.password);
       } else {
         _key = 'teacher:${t.email.toLowerCase()}';
-        _currentPassword = store.passwordOverride(_key) ?? 'aust1234';
+        _currentPassword = store.passwordOverride(_key) ?? 'aust12345';
       }
     } else {
       final roll = s.student!.rollNo;
@@ -82,7 +89,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_current.text.trim() != _currentPassword) {
+    if (!_directReset && _current.text.trim() != _currentPassword) {
       setState(() {
         _ok = false;
         _message = 'Current password is wrong.';
@@ -131,7 +138,10 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'Changing password for: $_who',
+                          _directReset
+                              ? 'Admin device — set a new password for $_who '
+                                    '(no current password needed).'
+                              : 'Changing password for: $_who',
                           style: const TextStyle(
                             fontWeight: FontWeight.w800,
                             color: PortalColors.textPrimary,
@@ -146,18 +156,20 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
                   key: _formKey,
                   child: Column(
                     children: [
-                      TextFormField(
-                        controller: _current,
-                        obscureText: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Current password',
-                          prefixIcon: Icon(Icons.lock_outline_rounded),
+                      if (!_directReset) ...[
+                        TextFormField(
+                          controller: _current,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Current password',
+                            prefixIcon: Icon(Icons.lock_outline_rounded),
+                          ),
+                          validator: (v) => (v == null || v.trim().isEmpty)
+                              ? 'Enter current password.'
+                              : null,
                         ),
-                        validator: (v) => (v == null || v.trim().isEmpty)
-                            ? 'Enter current password.'
-                            : null,
-                      ),
-                      const SizedBox(height: 14),
+                        const SizedBox(height: 14),
+                      ],
                       TextFormField(
                         controller: _next,
                         obscureText: true,

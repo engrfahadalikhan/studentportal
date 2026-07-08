@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
@@ -5,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
+import '../services/cloud_sync_service.dart';
 import '../ui/student_portal_shell.dart';
 import 'fyp_allocation_pdf.dart';
 import 'fyp_groups_tabs.dart';
@@ -50,7 +53,15 @@ class _FypSectionState extends State<FypSection>
   void initState() {
     super.initState();
     _tabController = TabController(length: 7, vsync: this);
-    _studentChoicesFuture = widget.repository.classmatesFor(widget.student);
+    // Group members can be ANY eligible final-year student — not just the
+    // student's own section (classmatesFor filtered by program+semester+
+    // section, so the dropdown only showed a handful of section-mates).
+    _studentChoicesFuture = Future.value(fypEligibleStudents());
+    unawaited(_refreshFyp(force: false));
+  }
+
+  Future<void> _refreshFyp({bool force = true}) {
+    return CloudSyncService.instance.pullFypWorkspace(force: force);
   }
 
   @override
@@ -74,6 +85,13 @@ class _FypSectionState extends State<FypSection>
               backgroundColor: PortalColors.pageBackground,
               appBar: AppBar(
                 title: const Text('Final Year Project'),
+                actions: [
+                  IconButton(
+                    tooltip: 'Refresh FYP',
+                    onPressed: () => unawaited(_refreshFyp()),
+                    icon: const Icon(Icons.refresh_rounded),
+                  ),
+                ],
                 bottom: TabBar(
                   controller: _tabController,
                   isScrollable: true,

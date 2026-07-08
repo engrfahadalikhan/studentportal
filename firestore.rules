@@ -1,29 +1,70 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // The app has no Firebase Auth (offline logins), so the app's own
-    // collections are open. Every doc id is a stable record id, so writes are
-    // idempotent and can never create duplicates.
-    match /attendance_scans/{id}   { allow read, write: if true; }
-    match /exam_students/{id}      { allow read, write: if true; }
-    match /exam_halls/{id}         { allow read, write: if true; }
-    match /exam_sheets/{id}        { allow read, write: if true; }
-    match /exam_records/{id}       { allow read, write: if true; }
-    match /exam_ufm/{id}           { allow read, write: if true; }
-    match /exam_deleted/{id}       { allow read, write: if true; }
-    match /cloud_assignments/{id}  { allow read, write: if true; }
-    match /cloud_submissions/{id}  { allow read, write: if true; }
-    match /cloud_paper_batches/{id}{ allow read, write: if true; }
-    match /slot_slots/{id}         { allow read, write: if true; }
-    match /slot_rows/{id}          { allow read, write: if true; }
-    match /slot_receipts/{id}      { allow read, write: if true; }
-    match /slot_contributions/{id} { allow read, write: if true; }
-    match /cloud_fyp_groups/{id}   { allow read, write: if true; }
-    match /cloud_fyp_panels/{id}   { allow read, write: if true; }
-    match /cloud_fyp_meetings/{id} { allow read, write: if true; }
-    match /cloud_credentials/{id}  { allow read, write: if true; }
+    function isCurrentClient() {
+      return request.resource.data.client_build is int
+        && request.resource.data.client_build >= 100;
+    }
 
-    // Everything else stays locked.
-    match /{document=**} { allow read, write: if false; }
+    function isFypSyncCollection(collection) {
+      return collection in [
+        'cloud_fyp_groups',
+        'cloud_fyp_panels',
+        'cloud_fyp_meetings',
+        'cloud_fyp_viva',
+        'cloud_fyp_evaluations',
+        'cloud_fyp_submissions',
+        'cloud_fyp_ideas',
+        'cloud_fyp_allocations',
+        'cloud_fyp_proposals',
+        'cloud_fyp_meetinglogs',
+        'cloud_fyp_consents',
+        'cloud_fyp_srs',
+        'cloud_credentials',
+      ];
+    }
+
+    // AUST Connect + AUST Event live sync (top-level collections written by the
+    // CloudLite transport). These names are new, so old APKs never touch them.
+    function isConnectEventCollection(collection) {
+      return collection in [
+        'connect_complaints',
+        'connect_files',
+        'connect_departments',
+        'connect_notifications',
+        'event_events',
+        'event_notifications',
+      ];
+    }
+
+    // Remote kill-switch / minimum build control. Only Firebase admin/CLI
+    // should edit this document; clients can only read it.
+    match /app_control/{id} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // New app data namespace. Old APKs still point at root collections, so
+    // they cannot reach these paths. Only FYP sync is enabled for now.
+    match /aust_portal_v2/{space}/{collection}/{id} {
+      allow read: if isFypSyncCollection(collection);
+      allow create, update, delete: if isFypSyncCollection(collection)
+        && isCurrentClient();
+    }
+
+    // AUST Connect + AUST Event: read open (so every device sees the board),
+    // writes must carry a current client build. Deletes are done as tombstones
+    // (deleted flag), so hard delete stays off.
+    match /{collection}/{id} {
+      allow read: if isConnectEventCollection(collection);
+      allow create, update: if isConnectEventCollection(collection)
+        && isCurrentClient();
+    }
+
+    // Root-level legacy app collections are intentionally locked. This makes
+    // old APK listeners/writes fail instead of burning the free Firebase quota.
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }

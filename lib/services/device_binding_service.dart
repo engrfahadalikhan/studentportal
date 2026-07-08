@@ -33,15 +33,30 @@ class DeviceBindingService extends ChangeNotifier {
   static final DeviceBindingService instance = DeviceBindingService._();
 
   static const _kList = 'device_bound_list_v2';
+  static const _kAllowAll = 'device_allow_all_v1';
   // Legacy single-binding keys (migrated on load).
   static const _kRole = 'device_bound_role';
   static const _kKey = 'device_bound_key';
   static const _kLabel = 'device_bound_label';
 
   final List<BindingEntry> _entries = [];
+  bool _allowAll = false;
 
   List<BindingEntry> get entries => List.unmodifiable(_entries);
   bool get isBound => _entries.isNotEmpty;
+
+  /// Open device: EVERYONE (students + teachers + admin) may sign in, and the
+  /// first login never claims it. Individual assignments below stay possible
+  /// and take effect again the moment this is switched off.
+  bool get allowAll => _allowAll;
+
+  Future<void> setAllowAll(bool value) async {
+    if (_allowAll == value) return;
+    _allowAll = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kAllowAll, value);
+    notifyListeners();
+  }
 
   /// Key of the only student/teacher entry (for locking the login field), or
   /// null when there are zero or several of that role.
@@ -50,8 +65,11 @@ class DeviceBindingService extends ChangeNotifier {
     return of.length == 1 ? of.first.key : null;
   }
 
-  String? singleKeyOf(String role) => _singleKeyOfRole(role);
+  // On an open (allow-all) device nothing is locked to a single person.
+  String? singleKeyOf(String role) =>
+      _allowAll ? null : _singleKeyOfRole(role);
   String? singleLabelOf(String role) {
+    if (_allowAll) return null;
     final of = _entries.where((e) => e.role == role).toList();
     return of.length == 1 ? of.first.label : null;
   }
@@ -60,6 +78,7 @@ class DeviceBindingService extends ChangeNotifier {
 
   /// Short human summary for the login banner.
   String get summaryLabel {
+    if (_allowAll) return 'Everyone (open device)';
     if (_entries.isEmpty) return '';
     if (_entries.length == 1) return _entries.first.label;
     return '${_entries.length} people';
@@ -67,6 +86,7 @@ class DeviceBindingService extends ChangeNotifier {
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
+    _allowAll = prefs.getBool(_kAllowAll) ?? false;
     _entries.clear();
     final raw = prefs.getString(_kList);
     if (raw != null && raw.isNotEmpty) {
@@ -112,11 +132,13 @@ class DeviceBindingService extends ChangeNotifier {
   );
 
   /// First student/teacher to log in claims the device (only when empty).
+  /// An open ("allowed for all") device is never claimed.
   Future<void> bindIfUnclaimed({
     required String role,
     required String key,
     required String label,
   }) async {
+    if (_allowAll) return;
     if (_entries.isNotEmpty) return;
     await addPerson(role: role, key: key, label: label);
   }
@@ -156,9 +178,11 @@ class DeviceBindingService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Whether [role]+[key] may sign in. Admin always; an unbound device allows
-  /// anyone; a bound device only its assigned people.
+  /// Whether [role]+[key] may sign in. Admin always; an "allowed for all"
+  /// device allows everyone; an unbound device allows anyone; a bound device
+  /// only its assigned people.
   bool allows({required String role, required String key}) {
+    if (_allowAll) return true;
     if (role == 'admin') return true;
     if (_entries.isEmpty) return true;
     return _has(role, key);

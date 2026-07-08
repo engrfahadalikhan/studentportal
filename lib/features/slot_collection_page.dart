@@ -4,8 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../services/cloud_sync_service.dart';
 import '../services/slot_collection_repository.dart';
 import '../ui/student_portal_shell.dart';
+import 'complete_attendance_page.dart';
+import 'slot_collection_pdf.dart';
 
 /// Admin / exam-cell module: consolidate a whole slot's paper collection.
 ///
@@ -238,7 +241,8 @@ class _SlotCollectionPageState extends State<SlotCollectionPage> {
       ),
     );
     if (yes != true) return;
-    await _repository.clearAll();
+    final items = await _repository.clearAll();
+    CloudSyncService.instance.pushDeletions(items);
     setState(() => _currentId = null);
     await _reload();
   }
@@ -291,6 +295,18 @@ class _SlotCollectionPageState extends State<SlotCollectionPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_slots.isNotEmpty) ...[
+          _CompleteAttendanceCard(
+            slots: _slots,
+            onOpen: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    CompleteAttendancePage(repository: _repository),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         const _SectionHeader(
           icon: Icons.event_note_rounded,
           title: 'Saved slots',
@@ -311,7 +327,8 @@ class _SlotCollectionPageState extends State<SlotCollectionPage> {
                 _setMessage(true, 'Opened ${s.title}.');
               },
               onDelete: () async {
-                await _repository.deleteSlot(s.id);
+                final items = await _repository.deleteSlot(s.id);
+                CloudSyncService.instance.pushDeletions(items);
                 await _reload();
               },
             ),
@@ -409,6 +426,13 @@ class _SlotCollectionPageState extends State<SlotCollectionPage> {
                   color: PortalColors.textPrimary,
                 ),
               ),
+            ),
+            TextButton.icon(
+              onPressed: _rows.isEmpty
+                  ? null
+                  : () => shareSlotCollectionPdf(slot: slot, rows: _rows),
+              icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+              label: const Text('PDF'),
             ),
             TextButton.icon(
               onPressed: () {
@@ -627,6 +651,77 @@ class _TotalPill extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Banner atop the slot list: grand totals across ALL days & slots + a button
+/// into the consolidated Complete Attendance view.
+class _CompleteAttendanceCard extends StatelessWidget {
+  const _CompleteAttendanceCard({required this.slots, required this.onOpen});
+
+  final List<SlotSummary> slots;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    var present = 0, absent = 0, ufm = 0;
+    for (final s in slots) {
+      present += s.totalPresent;
+      absent += s.totalAbsent;
+      ufm += s.totalUfm;
+    }
+    final days = slots.map((s) => s.examDate.trim()).toSet()
+      ..removeWhere((e) => e.isEmpty);
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onOpen,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: PortalColors.heroGradient,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.fact_check_rounded, color: Colors.white),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Complete Attendance',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.white,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'All ${days.length} day(s) · ${slots.length} slot(s) — '
+                'P $present  A $absent  UFM $ufm',
+                style: const TextStyle(
+                  color: Color(0xFFF3E7BF),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

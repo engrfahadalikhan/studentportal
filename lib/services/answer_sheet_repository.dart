@@ -83,6 +83,40 @@ class AnswerSheetRepository {
         'printed by csexam.',
       );
     }
+    return _applyBatches(parsed, isReturn);
+  }
+
+  /// Records ONE hand-typed bundle — the fallback used when a QR will not scan.
+  /// Works in both Issue (out for teacher) and Return (back after marking)
+  /// modes, exactly like a scan of a single bundle.
+  Future<PaperScanResult> recordManualBatch({
+    required String program,
+    required String subject,
+    required String faculty,
+    required String hall,
+    required String examDate,
+    required String shift,
+    required int count,
+    required bool isReturn,
+  }) async {
+    final batch = PaperBatch.create(
+      program: program.trim(),
+      subject: subject.trim(),
+      faculty: faculty.trim(),
+      hall: hall.trim(),
+      examDate: examDate.trim(),
+      shift: shift.trim(),
+      count: count,
+    );
+    return _applyBatches([batch], isReturn);
+  }
+
+  /// Inserts/updates a list of bundles as issued or returned, preserving the
+  /// original issue time on return. Shared by scan and manual entry.
+  Future<PaperScanResult> _applyBatches(
+    List<PaperBatch> parsed,
+    bool isReturn,
+  ) async {
     final db = _requireDb();
     final now = DateTime.now().toIso8601String();
     final affected = <PaperBatch>[];
@@ -187,8 +221,19 @@ class AnswerSheetRepository {
     await _requireDb().delete('paper_batches', where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<void> clearAll() async {
-    await _requireDb().delete('paper_batches');
+  /// Clears all batches and returns (table, id) tombstone items so the caller
+  /// can push them to the cloud — otherwise other devices re-push the batches
+  /// back and they reappear.
+  Future<List<(String, String)>> clearAll() async {
+    final db = _requireDb();
+    final rows = await db.query('paper_batches', columns: const ['id']);
+    final items = <(String, String)>[
+      for (final r in rows)
+        if ((r['id'] ?? '').toString().isNotEmpty)
+          ('paper_batches', (r['id'] ?? '').toString()),
+    ];
+    await db.delete('paper_batches');
+    return items;
   }
 
   // ----------------------------------------------------------------- parsing

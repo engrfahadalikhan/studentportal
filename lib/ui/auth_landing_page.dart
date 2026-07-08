@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -6,13 +6,13 @@ import '../models/app_role.dart';
 import '../services/app_repository.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/device_binding_service.dart';
+import '../services/firebase_paths.dart';
 import '../services/login_store.dart';
 import 'shared_widgets.dart';
 import 'student_portal_shell.dart';
 
 /// Shown on the login card so it's obvious which build is installed.
-/// Bump alongside `version:` in pubspec.yaml.
-const String kAppVersionLabel = 'v2.4.0';
+const String kAppVersionLabel = kAustPortalVersionLabel;
 
 class AuthLandingPage extends StatefulWidget {
   const AuthLandingPage({super.key, required this.repository});
@@ -50,7 +50,7 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
   /// teacher, only that role (plus Admin, the override) is selectable.
   List<AppRole> get _allowedRoles {
     final b = DeviceBindingService.instance;
-    if (!b.isBound) {
+    if (b.allowAll || !b.isBound) {
       return const [AppRole.student, AppRole.faculty, AppRole.admin];
     }
     final roles = <AppRole>[];
@@ -200,107 +200,112 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
           padding: EdgeInsets.all(compact ? 18 : 28),
           child: _LoginFieldTheme(
             child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Sign in',
-                  style: theme.textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                    color: PortalColors.textPrimary,
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Sign in',
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      color: PortalColors.textPrimary,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Abbottabad University of Science and Technology  â€¢  $kAppVersionLabel',
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    color: PortalColors.subtleText,
-                    height: 1.35,
+                  const SizedBox(height: 8),
+                  Text(
+                    'Abbottabad University of Science and Technology  â€¢  $kAppVersionLabel',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: PortalColors.subtleText,
+                      height: 1.35,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 24),
-                _RoleDropdown(
-                  selectedRole: _selectedRole,
-                  roles: _allowedRoles,
-                  onChanged: (role) {
-                    setState(() {
-                      _selectedRole = role;
-                      _obscurePassword = true;
-                      _usernameController.clear();
-                      _passwordController.clear();
-                      _applySavedForRole(role);
-                    });
-                  },
-                ),
-                if (DeviceBindingService.instance.isBound) ...[
-                  const SizedBox(height: 12),
-                  _DeviceBoundBanner(
-                    label: DeviceBindingService.instance.summaryLabel,
+                  const SizedBox(height: 24),
+                  _RoleDropdown(
+                    selectedRole: _selectedRole,
+                    roles: _allowedRoles,
+                    onChanged: (role) {
+                      setState(() {
+                        _selectedRole = role;
+                        _obscurePassword = true;
+                        _usernameController.clear();
+                        _passwordController.clear();
+                        _applySavedForRole(role);
+                      });
+                    },
                   ),
+                  if (DeviceBindingService.instance.isBound) ...[
+                    const SizedBox(height: 12),
+                    _DeviceBoundBanner(
+                      label: DeviceBindingService.instance.summaryLabel,
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  if (_selectedRole == AppRole.faculty)
+                    _teacherAccountPanel()
+                  else
+                    Column(
+                      children: [
+                        if (_selectedRole == AppRole.admin)
+                          _adminNamePicker()
+                        else
+                          TextFormField(
+                            controller: _usernameController,
+                            keyboardType: TextInputType.text,
+                            readOnly: _studentRollLocked,
+                            decoration: InputDecoration(
+                              labelText: _usernameLabel,
+                              prefixIcon: Icon(_usernameIcon),
+                              suffixIcon: _studentRollLocked
+                                  ? const Icon(Icons.lock_outline, size: 18)
+                                  : null,
+                              helperText: _studentRollLocked
+                                  ? 'This device is locked to this roll number.'
+                                  : null,
+                            ),
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Enter $_usernameLabel.';
+                              }
+                              return null;
+                            },
+                          ),
+                        const SizedBox(height: 16),
+                        _PasswordField(
+                          controller: _passwordController,
+                          label: 'Password',
+                          obscurePassword: _obscurePassword,
+                          onToggleVisibility: _togglePasswordVisibility,
+                          // Open device: admin may enter any teacher/student
+                          // account by leaving the password empty.
+                          allowEmpty:
+                              _selectedRole != AppRole.admin &&
+                              DeviceBindingService.instance.allowAll,
+                        ),
+                        const SizedBox(height: 12),
+                        // Admin password is never saved, so hide the toggle.
+                        if (_selectedRole != AppRole.admin)
+                          _SavePasswordTile(
+                            value: _savePassword,
+                            onChanged: (v) => setState(() => _savePassword = v),
+                          ),
+                        const SizedBox(height: 12),
+                        _CredentialHint(role: _selectedRole),
+                        const SizedBox(height: 24),
+                        _GradientActionButton(
+                          icon: _roleIcon(_selectedRole),
+                          label: _loginInProgress
+                              ? 'Logging in...'
+                              : 'Login as ${_selectedRole.label}',
+                          onPressed: _loginInProgress
+                              ? null
+                              : () => _signIn(context),
+                        ),
+                      ],
+                    ),
                 ],
-                const SizedBox(height: 16),
-                if (_selectedRole == AppRole.faculty)
-                  _teacherAccountPanel()
-                else
-                  Column(
-                    children: [
-                      if (_selectedRole == AppRole.admin)
-                        _adminNamePicker()
-                      else
-                      TextFormField(
-                        controller: _usernameController,
-                        keyboardType: TextInputType.text,
-                        readOnly: _studentRollLocked,
-                        decoration: InputDecoration(
-                          labelText: _usernameLabel,
-                          prefixIcon: Icon(_usernameIcon),
-                          suffixIcon: _studentRollLocked
-                              ? const Icon(Icons.lock_outline, size: 18)
-                              : null,
-                          helperText: _studentRollLocked
-                              ? 'This device is locked to this roll number.'
-                              : null,
-                        ),
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Enter $_usernameLabel.';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      _PasswordField(
-                        controller: _passwordController,
-                        label: 'Password',
-                        obscurePassword: _obscurePassword,
-                        onToggleVisibility: _togglePasswordVisibility,
-                      ),
-                      const SizedBox(height: 12),
-                      // Admin password is never saved, so hide the toggle.
-                      if (_selectedRole != AppRole.admin)
-                        _SavePasswordTile(
-                          value: _savePassword,
-                          onChanged: (v) => setState(() => _savePassword = v),
-                        ),
-                      const SizedBox(height: 12),
-                      _CredentialHint(role: _selectedRole),
-                      const SizedBox(height: 24),
-                      _GradientActionButton(
-                        icon: _roleIcon(_selectedRole),
-                        label: _loginInProgress
-                            ? 'Logging in...'
-                            : 'Login as ${_selectedRole.label}',
-                        onPressed: _loginInProgress
-                            ? null
-                            : () => _signIn(context),
-                      ),
-                    ],
-                  ),
-              ],
+              ),
             ),
-          ),
           ),
         );
       },
@@ -399,13 +404,6 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
           value: _savePassword,
           onChanged: (v) => setState(() => _savePassword = v),
         ),
-        const SizedBox(height: 12),
-        _TeacherSetupHint(
-          text: isOther
-              ? 'New teacher: type a name and password. It will be saved in '
-                    'this list for next time.'
-              : 'Default teacher password is aust1234 (unless changed).',
-        ),
         const SizedBox(height: 24),
         _GradientActionButton(
           icon: Icons.login_rounded,
@@ -462,8 +460,7 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
         prefixIcon: Icon(Icons.admin_panel_settings_outlined),
       ),
       items: [
-        for (final n in _adminNames)
-          DropdownMenuItem(value: n, child: Text(n)),
+        for (final n in _adminNames) DropdownMenuItem(value: n, child: Text(n)),
       ],
       onChanged: (v) => setState(() => _adminName = v ?? _adminName),
     );
@@ -498,7 +495,7 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
   }
 
   /// If this teacher/student is still on the shared DEFAULT password
-  /// (`aust1234` / `1234`), forces them to set their own — the dialog cannot
+  /// (`aust12345` / `1234`), forces them to set their own — the dialog cannot
   /// be dismissed without saving. Returns the password now in effect.
   /// Custom "Other" teachers already chose a personal password, so they skip.
   Future<String> _forcePasswordChangeIfDefault({
@@ -512,7 +509,7 @@ class _AuthLandingPageState extends State<AuthLandingPage> {
       final t = widget.repository.teacherByEmail(username);
       if (t == null) return typedPassword; // custom teacher — own password
       key = 'teacher:${t.email.toLowerCase()}';
-      defaultPassword = 'aust1234';
+      defaultPassword = 'aust12345';
     } else if (role == AppRole.student) {
       key = 'student:${username.toLowerCase()}';
       defaultPassword = '1234';
@@ -935,7 +932,10 @@ class _DeviceBoundBanner extends StatelessWidget {
             child: Text(
               'This device is assigned to $label. Only this account (or Admin) '
               'can sign in.',
-              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ],
@@ -945,17 +945,23 @@ class _DeviceBoundBanner extends StatelessWidget {
 }
 
 class _PasswordField extends StatelessWidget {
+  // ignore: unused_element_parameter
   const _PasswordField({
     required this.controller,
     required this.label,
     required this.obscurePassword,
     required this.onToggleVisibility,
+    this.allowEmpty = false,
   });
 
   final TextEditingController controller;
   final String label;
   final bool obscurePassword;
   final VoidCallback onToggleVisibility;
+
+  /// Open ("Allowed for ALL") device: an empty password is a valid admin
+  /// bypass into any teacher/student account, so don't block the form.
+  final bool allowEmpty;
 
   @override
   Widget build(BuildContext context) {
@@ -964,6 +970,9 @@ class _PasswordField extends StatelessWidget {
       obscureText: obscurePassword,
       decoration: InputDecoration(
         labelText: label,
+        helperText: allowEmpty
+            ? 'Open device: leave empty to enter without a password.'
+            : null,
         prefixIcon: const Icon(Icons.lock_outline),
         suffixIcon: IconButton(
           tooltip: obscurePassword ? 'Show password' : 'Hide password',
@@ -976,6 +985,7 @@ class _PasswordField extends StatelessWidget {
         ),
       ),
       validator: (value) {
+        if (allowEmpty) return null;
         if (value == null || value.trim().isEmpty) {
           return 'Enter password.';
         }
@@ -1000,10 +1010,7 @@ class _SavePasswordTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Row(
           children: [
-            Checkbox(
-              value: value,
-              onChanged: (v) => onChanged(v ?? false),
-            ),
+            Checkbox(value: value, onChanged: (v) => onChanged(v ?? false)),
             const Expanded(
               child: Text(
                 'Save password (auto-fill next time â€” just tap Login)',
@@ -1060,44 +1067,6 @@ class _GradientActionButton extends StatelessWidget {
   }
 }
 
-class _TeacherSetupHint extends StatelessWidget {
-  const _TeacherSetupHint({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(13),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: PortalColors.cardBorder),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.info_outline_rounded,
-            color: PortalColors.brandBlue,
-            size: 19,
-          ),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Text(
-              text,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: PortalColors.subtleText,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _CredentialHint extends StatelessWidget {
   const _CredentialHint({required this.role});
 
@@ -1110,7 +1079,7 @@ class _CredentialHint extends StatelessWidget {
         'Teacher can login without password for now. Select teacher name only.',
       AppRole.admin =>
         'Admin login: username admin. Enter the admin password every time '
-        '(not saved on this device).',
+            '(not saved on this device).',
       AppRole.student =>
         'Student password is 1234 with a valid roll number from the enrollment sheet.',
     };

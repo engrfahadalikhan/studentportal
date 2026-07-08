@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/app_palettes.dart';
 import '../theme/theme_controller.dart';
@@ -53,6 +54,8 @@ class _MenuWheelState extends State<MenuWheel>
   double _lastTouchAngle = 0;
   double _angVel = 0; // rad/sec, for momentum
   Duration _lastMoveAt = Duration.zero;
+  Duration _lastTickAt = Duration.zero;
+  int? _lastTickIndex;
   final _clock = Stopwatch()..start();
 
   int get _n => widget.items.length;
@@ -68,7 +71,10 @@ class _MenuWheelState extends State<MenuWheel>
   void initState() {
     super.initState();
     _ctrl = AnimationController.unbounded(vsync: this)
-      ..addListener(() => setState(() => _angle = _ctrl.value));
+      ..addListener(() {
+        setState(() => _angle = _ctrl.value);
+        _tickIfSelectionMoved();
+      });
   }
 
   @override
@@ -83,6 +89,7 @@ class _MenuWheelState extends State<MenuWheel>
   void _onPanStart(DragStartDetails d, Size size) {
     _ctrl.stop();
     _angVel = 0;
+    _lastTickIndex = _selected;
     _lastTouchAngle = _touchAngle(d.localPosition, size);
     _lastMoveAt = _clock.elapsed;
   }
@@ -98,10 +105,12 @@ class _MenuWheelState extends State<MenuWheel>
     _lastMoveAt = now;
     _lastTouchAngle = a;
     setState(() => _angle += delta);
+    _tickIfSelectionMoved();
   }
 
   void _onPanEnd(DragEndDetails d) {
     _ctrl.value = _angle;
+    _lastTickIndex = _selected;
     final v = _angVel.clamp(-40.0, 40.0);
     if (v.abs() < 0.2) {
       _snap();
@@ -125,11 +134,29 @@ class _MenuWheelState extends State<MenuWheel>
   void _flick() {
     _ctrl.stop();
     _ctrl.value = _angle;
+    _lastTickIndex = _selected;
     _ctrl
         .animateWith(
-          FrictionSimulation(0.14, _angle, 12 + math.Random().nextDouble() * 10),
+          FrictionSimulation(
+            0.14,
+            _angle,
+            12 + math.Random().nextDouble() * 10,
+          ),
         )
         .whenComplete(_snap);
+  }
+
+  void _tickIfSelectionMoved() {
+    if (_n <= 1) return;
+    final selected = _selected;
+    final previous = _lastTickIndex;
+    _lastTickIndex = selected;
+    if (previous == null || previous == selected) return;
+    final now = _clock.elapsed;
+    if (now - _lastTickAt < const Duration(milliseconds: 45)) return;
+    _lastTickAt = now;
+    HapticFeedback.selectionClick();
+    SystemSound.play(SystemSoundType.click);
   }
 
   @override
@@ -143,8 +170,10 @@ class _MenuWheelState extends State<MenuWheel>
         final maxW = constraints.maxWidth.isFinite
             ? constraints.maxWidth
             : MediaQuery.sizeOf(context).width;
-        // Reserve vertical room for the readout + buttons + hint below the disc.
-        const reserve = 132.0;
+        // Reserve vertical room for the readout + buttons + hint below the
+        // disc AND the 14px pointer above it (forgetting the pointer made the
+        // column overflow by a few px on short screens).
+        const reserve = 152.0;
         var d = math.min(maxW - 8, 340.0);
         if (constraints.maxHeight.isFinite) {
           d = math.min(d, constraints.maxHeight - reserve);

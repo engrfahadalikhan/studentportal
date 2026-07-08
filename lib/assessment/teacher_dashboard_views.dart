@@ -10,6 +10,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../connect/connect_home_page.dart';
+import '../connect/event_home_page.dart';
+import '../connect/connect_models.dart';
 import '../theme/theme_picker.dart';
 import '../ui/student_portal_shell.dart';
 import 'menu_wheel.dart';
@@ -113,6 +116,38 @@ class TeacherDashboardHomeView extends StatelessWidget {
                 label: 'FYP Workspace',
                 sub: 'Ideas, allocations, evaluations',
                 onTap: onOpenFyp,
+              ),
+              WheelItem(
+                icon: Icons.forum_outlined,
+                label: 'AUST Connect',
+                sub: 'Complaints & file tracking',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ConnectHomePage(
+                      identity: ConnectIdentity(
+                        name: data.teacherName,
+                        role: 'teacher',
+                        id: data.teacherName,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              WheelItem(
+                icon: Icons.celebration_outlined,
+                label: 'AUST Event',
+                sub: 'Campus events board',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => EventHomePage(
+                      identity: ConnectIdentity(
+                        name: data.teacherName,
+                        role: 'teacher',
+                        id: data.teacherName,
+                      ),
+                    ),
+                  ),
+                ),
               ),
               if (onAnswerSheets != null)
                 WheelItem(

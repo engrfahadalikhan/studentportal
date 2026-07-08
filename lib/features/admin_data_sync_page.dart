@@ -235,12 +235,10 @@ class _AdminDataSyncPageState extends State<AdminDataSyncPage> {
                             ? null
                             : () async {
                                 final sync = CloudSyncService.instance;
-                                await sync.start(
-                                  repository: widget.repository,
-                                );
+                                await sync.start(repository: widget.repository);
                                 await sync.pushLocalScans();
                                 await sync.pushExamData();
-                                await sync.pushModules(all: true);
+                                await sync.pushModules();
                               },
                         icon: const Icon(Icons.cloud_sync_rounded),
                         label: const Text('Sync now'),
@@ -383,10 +381,7 @@ class _AdminDataSyncPageState extends State<AdminDataSyncPage> {
         children: [
           Text(
             title,
-            style: const TextStyle(
-              fontWeight: FontWeight.w900,
-              fontSize: 14.5,
-            ),
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14.5),
           ),
           const SizedBox(height: 10),
           child,

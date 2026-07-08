@@ -16,6 +16,7 @@ import '../models/student_record.dart';
 import '../models/verification_officer.dart';
 import '../ui/shared_widgets.dart';
 import 'cloud_sync_service.dart';
+import 'device_binding_service.dart';
 import 'local_student_enrollment_store.dart';
 import 'login_store.dart';
 import 'seating_plan_service.dart';
@@ -246,7 +247,21 @@ class AppRepository extends ChangeNotifier {
       throw const PortalAuthException('Enter username first.');
     }
 
-    await CloudSyncService.instance.bootstrapLoginData();
+    // Pull ONLY this person's cloud password before validating (1-2 doc
+    // reads, not the whole collection) — so a password changed on another
+    // phone immediately invalidates the default here. FYP itself is pulled
+    // only when the FYP screen opens, to protect the free Firebase quota.
+    await CloudSyncService.instance.bootstrapLoginData(
+      credentialKeys: [
+        if (role == AppRole.student)
+          'student:${normalizedUsername.toLowerCase()}',
+        if (role == AppRole.faculty) ...[
+          'teacher:${normalizedUsername.toLowerCase()}',
+          'teacher:custom:${normalizedUsername.toLowerCase()}',
+        ],
+      ],
+      includeFypWorkspace: false,
+    );
 
     if (role == AppRole.admin) {
       final expected =
@@ -260,8 +275,15 @@ class AppRepository extends ChangeNotifier {
       return;
     }
 
+    // Admin-blessed OPEN device ("Allowed for ALL"): leaving the password
+    // EMPTY signs into any teacher/student account without their password.
+    // Only the admin can turn that switch on, so the device itself is the
+    // authorization. A typed (non-empty) password is still validated normally.
+    final adminOpenDevice =
+        DeviceBindingService.instance.allowAll && normalizedPassword.isEmpty;
+
     if (role == AppRole.faculty) {
-      if (normalizedPassword.isEmpty) {
+      if (normalizedPassword.isEmpty && !adminOpenDevice) {
         throw const PortalAuthException('Enter the teacher password.');
       }
 
@@ -273,7 +295,7 @@ class AppRepository extends ChangeNotifier {
         final key = 'teacher:custom:${custom.name.toLowerCase()}';
         final expected =
             LoginStore.instance.passwordOverride(key) ?? custom.password;
-        if (normalizedPassword != expected) {
+        if (!adminOpenDevice && normalizedPassword != expected) {
           throw const PortalAuthException('Teacher password is wrong.');
         }
         _currentSession = PortalSession.teacher(
@@ -293,13 +315,13 @@ class AppRepository extends ChangeNotifier {
       if (teacher == null) {
         throw const PortalAuthException('Select a valid teacher first.');
       }
-      // Shared default "aust1234", unless the teacher changed it.
+      // Shared default "aust12345", unless the teacher changed it.
       final expected =
           LoginStore.instance.passwordOverride(
             'teacher:${teacher.email.toLowerCase()}',
           ) ??
-          'aust1234';
-      if (normalizedPassword != expected) {
+          'aust12345';
+      if (!adminOpenDevice && normalizedPassword != expected) {
         throw const PortalAuthException('Teacher password is wrong.');
       }
 
@@ -309,7 +331,7 @@ class AppRepository extends ChangeNotifier {
       return;
     }
 
-    if (normalizedPassword.isEmpty) {
+    if (normalizedPassword.isEmpty && !adminOpenDevice) {
       throw const PortalAuthException('Enter password first.');
     }
 
@@ -318,7 +340,7 @@ class AppRepository extends ChangeNotifier {
           'student:${normalizedUsername.toLowerCase()}',
         ) ??
         '1234';
-    if (normalizedPassword != studentExpected) {
+    if (!adminOpenDevice && normalizedPassword != studentExpected) {
       throw const PortalAuthException('Password is incorrect.');
     }
 

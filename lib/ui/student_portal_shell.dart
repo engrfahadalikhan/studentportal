@@ -7,6 +7,9 @@ import '../features/feature_visibility_service.dart';
 import '../assessment/menu_wheel.dart';
 import '../fyp/fyp_models.dart';
 import '../fyp/fyp_repository.dart';
+import '../connect/connect_home_page.dart';
+import '../connect/event_home_page.dart';
+import '../connect/connect_models.dart';
 import '../fyp/fyp_section.dart';
 import '../internships/internships_section.dart';
 import '../models/app_role.dart';
@@ -1575,6 +1578,38 @@ class _StudentMenuWheel extends StatelessWidget {
             sub: 'Opportunities',
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const InternshipsSection()),
+            ),
+          ),
+          WheelItem(
+            icon: Icons.forum_outlined,
+            label: 'AUST Connect',
+            sub: 'Complaints & file tracking',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ConnectHomePage(
+                  identity: ConnectIdentity(
+                    name: student.studentName,
+                    role: 'student',
+                    id: student.rollNo,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          WheelItem(
+            icon: Icons.celebration_outlined,
+            label: 'AUST Event',
+            sub: 'Campus events board',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => EventHomePage(
+                  identity: ConnectIdentity(
+                    name: student.studentName,
+                    role: 'student',
+                    id: student.rollNo,
+                  ),
+                ),
+              ),
             ),
           ),
         ];

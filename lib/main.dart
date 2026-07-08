@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'connect/connect_repository.dart';
+import 'connect/event_repository.dart';
 import 'firebase_options.dart';
 import 'features/feature_visibility_service.dart';
 import 'fyp/fyp_repository.dart';
@@ -19,6 +21,7 @@ import 'theme/app_theme.dart';
 import 'theme/theme_controller.dart';
 import 'ui/app_shell.dart';
 import 'ui/license_gate.dart';
+import 'ui/remote_version_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -42,6 +45,8 @@ Future<void> main() async {
   }
   await Future.wait([
     FypRepository.instance.load(),
+    ConnectRepository.instance.load(),
+    EventRepository.instance.load(),
     FeatureVisibilityService.instance.load(),
     AssessmentAccessService.instance.load(),
     PaperTrackerAccessService.instance.load(),
@@ -203,7 +208,9 @@ class _StudentPortalAppState extends State<StudentPortalApp>
           theme: AppTheme.light(ThemeController.instance.palette),
           // Light only — dark / system modes were removed by request.
           themeMode: ThemeMode.light,
-          home: LicenseGate(child: AppShell(repository: _repository)),
+          home: RemoteVersionGate(
+            child: LicenseGate(child: AppShell(repository: _repository)),
+          ),
         );
       },
     );

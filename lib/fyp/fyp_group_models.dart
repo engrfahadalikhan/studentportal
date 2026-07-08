@@ -113,6 +113,101 @@ class FypMeeting {
 }
 
 // ============================================================================
+// FYP Viva session — an examiner's live turn queue. The examiner puts their
+// groups in calling order and sets minutes per group; everyone then sees which
+// group is CURRENT, which is NEXT, and their estimated time. Entering marks
+// for the current group advances the turn automatically.
+// ============================================================================
+class FypVivaSession {
+  const FypVivaSession({
+    required this.id,
+    required this.examinerName,
+    required this.title,
+    required this.minutesPerGroup,
+    required this.groupIds,
+    required this.currentIndex,
+    required this.status, // 'running' | 'finished'
+    required this.startedAt,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String examinerName;
+  final String title;
+  final int minutesPerGroup;
+  final List<String> groupIds;
+  final int currentIndex;
+  final String status;
+  final DateTime startedAt;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  bool get isRunning => status == 'running';
+
+  String? get currentGroupId =>
+      (currentIndex >= 0 && currentIndex < groupIds.length)
+      ? groupIds[currentIndex]
+      : null;
+
+  String? get nextGroupId =>
+      (currentIndex + 1 < groupIds.length) ? groupIds[currentIndex + 1] : null;
+
+  /// Estimated start time of the group at [index] in the queue.
+  DateTime estimatedStartOf(int index) =>
+      startedAt.add(Duration(minutes: minutesPerGroup * index));
+
+  FypVivaSession copyWith({
+    int? minutesPerGroup,
+    List<String>? groupIds,
+    int? currentIndex,
+    String? status,
+  }) => FypVivaSession(
+    id: id,
+    examinerName: examinerName,
+    title: title,
+    minutesPerGroup: minutesPerGroup ?? this.minutesPerGroup,
+    groupIds: groupIds ?? this.groupIds,
+    currentIndex: currentIndex ?? this.currentIndex,
+    status: status ?? this.status,
+    startedAt: startedAt,
+    createdAt: createdAt,
+    updatedAt: DateTime.now(),
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'examinerName': examinerName,
+    'title': title,
+    'minutesPerGroup': minutesPerGroup,
+    'groupIds': groupIds,
+    'currentIndex': currentIndex,
+    'status': status,
+    'startedAt': startedAt.toIso8601String(),
+    'createdAt': createdAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
+  };
+
+  static FypVivaSession fromJson(Map<dynamic, dynamic> m) => FypVivaSession(
+    id: (m['id'] ?? '').toString(),
+    examinerName: (m['examinerName'] ?? '').toString(),
+    title: (m['title'] ?? '').toString(),
+    minutesPerGroup: int.tryParse('${m['minutesPerGroup'] ?? 15}') ?? 15,
+    groupIds: [
+      for (final e in (m['groupIds'] as List? ?? const [])) e.toString(),
+    ],
+    currentIndex: int.tryParse('${m['currentIndex'] ?? 0}') ?? 0,
+    status: (m['status'] ?? 'running').toString(),
+    startedAt:
+        DateTime.tryParse((m['startedAt'] ?? '').toString()) ?? DateTime.now(),
+    createdAt:
+        DateTime.tryParse((m['createdAt'] ?? '').toString()) ?? DateTime.now(),
+    updatedAt:
+        DateTime.tryParse((m['updatedAt'] ?? '').toString()) ?? DateTime.now(),
+  );
+}
+
+// ============================================================================
 // FYP Group — the allotment workflow record
 //
 // Creation paths and their approval chains:

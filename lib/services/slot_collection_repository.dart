@@ -473,8 +473,38 @@ class SlotCollectionRepository {
     return rows.map(SlotRow.fromMap).toList(growable: false);
   }
 
-  Future<void> deleteSlot(String slotId) async {
+  /// Every program row across EVERY slot/day — for the consolidated
+  /// "Complete Attendance" view (all days & slots in one place).
+  Future<List<SlotRow>> loadAllRows() async {
+    final rows = await _requireDb().query(
+      'slot_rows',
+      orderBy: 'program COLLATE NOCASE, subject COLLATE NOCASE',
+    );
+    return rows.map(SlotRow.fromMap).toList(growable: false);
+  }
+
+  /// Deletes a slot and returns (table, id) tombstone items so the caller can
+  /// push them to the cloud — otherwise other devices re-push the slot back
+  /// and it "reappears" (same bug class as the FYP group deletes).
+  Future<List<(String, String)>> deleteSlot(String slotId) async {
     final db = _requireDb();
+    final items = <(String, String)>[('slots', slotId)];
+    Future<void> collect(String table, String col) async {
+      final rows = await db.query(
+        table,
+        columns: const ['id'],
+        where: '$col = ?',
+        whereArgs: [slotId],
+      );
+      for (final r in rows) {
+        final id = (r['id'] ?? '').toString();
+        if (id.isNotEmpty) items.add((table, id));
+      }
+    }
+
+    await collect('slot_rows', 'slot_id');
+    await collect('slot_receipts', 'slot_id');
+    await collect('slot_contributions', 'slot_id');
     await db.delete('slot_rows', where: 'slot_id = ?', whereArgs: [slotId]);
     await db.delete('slot_receipts', where: 'slot_id = ?', whereArgs: [slotId]);
     await db.delete(
@@ -483,14 +513,38 @@ class SlotCollectionRepository {
       whereArgs: [slotId],
     );
     await db.delete('slots', where: 'id = ?', whereArgs: [slotId]);
+    return items;
   }
 
-  Future<void> clearAll() async {
+  /// Clears everything and returns tombstone items for the cloud (see
+  /// [deleteSlot]).
+  Future<List<(String, String)>> clearAll() async {
     final db = _requireDb();
+    final items = <(String, String)>[];
+    for (final table in const [
+      'slots',
+      'slot_rows',
+      'slot_receipts',
+      'slot_contributions',
+    ]) {
+      final rows = await db.query(table, columns: const ['id']);
+      for (final r in rows) {
+        final id = (r['id'] ?? '').toString();
+        if (id.isNotEmpty) items.add((table, id));
+      }
+    }
     await db.delete('slot_rows');
     await db.delete('slot_receipts');
     await db.delete('slot_contributions');
     await db.delete('slots');
+    return items;
+  }
+
+  /// Applies a remote tombstone: removes one row by id (any slot table).
+  Future<void> deleteRowById(String table, String id) async {
+    const allowed = {'slots', 'slot_rows', 'slot_receipts', 'slot_contributions'};
+    if (!allowed.contains(table) || id.isEmpty) return;
+    await _requireDb().delete(table, where: 'id = ?', whereArgs: [id]);
   }
 
   // ---------------------------------------------------- cloud sync

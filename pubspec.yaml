@@ -3,7 +3,7 @@ description: "Merged Flutter teacher-student assessment and student portal app."
 
 publish_to: 'none'  # Remove this line if you wish to publish to pub.dev
 
-version: 2.4.0+73
+version: 2.13.2+110
 
 environment:
   sdk: ^3.9.2

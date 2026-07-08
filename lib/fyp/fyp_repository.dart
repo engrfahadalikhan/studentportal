@@ -27,6 +27,7 @@ class FypRepository extends ChangeNotifier {
   final List<String> _coordinators = [];
   final List<FypPanel> _panels = [];
   final List<FypMeeting> _meetings = [];
+  final List<FypVivaSession> _vivaSessions = [];
 
   // Tombstones: id → deletedAt (ISO). A delete must REACH other devices, not
   // just vanish locally — without these, every other phone kept re-pushing the
@@ -35,6 +36,7 @@ class FypRepository extends ChangeNotifier {
   final Map<String, String> _deletedGroups = {};
   final Map<String, String> _deletedPanels = {};
   final Map<String, String> _deletedMeetings = {};
+  final Map<String, String> _deletedViva = {};
 
   // -------- read-only accessors -------------------------------------------
   List<FypSubmission> get submissions => List.unmodifiable(_submissions);
@@ -48,10 +50,13 @@ class FypRepository extends ChangeNotifier {
   List<FypGroup> get groups => List.unmodifiable(_groups);
   List<FypPanel> get panels => List.unmodifiable(_panels);
   List<FypMeeting> get meetings => List.unmodifiable(_meetings);
+  List<FypVivaSession> get vivaSessions => List.unmodifiable(_vivaSessions);
   Map<String, String> get deletedGroupTombstones =>
       Map.unmodifiable(_deletedGroups);
   Map<String, String> get deletedPanelTombstones =>
       Map.unmodifiable(_deletedPanels);
+  Map<String, String> get deletedVivaTombstones =>
+      Map.unmodifiable(_deletedViva);
   Map<String, String> get deletedMeetingTombstones =>
       Map.unmodifiable(_deletedMeetings);
 
@@ -123,6 +128,9 @@ class FypRepository extends ChangeNotifier {
       _meetings
         ..clear()
         ..addAll(readList('meetings', FypMeeting.fromJson));
+      _vivaSessions
+        ..clear()
+        ..addAll(readList('viva', FypVivaSession.fromJson));
       _coordinators
         ..clear()
         ..addAll(_parseCoordinatorNames(decoded));
@@ -140,6 +148,7 @@ class FypRepository extends ChangeNotifier {
         readTombs('groups', _deletedGroups);
         readTombs('panels', _deletedPanels);
         readTombs('meetings', _deletedMeetings);
+        readTombs('viva', _deletedViva);
         // A tombstone must win over a record the store still carries.
         _groups.removeWhere(
           (g) => _tombstoneWins(_deletedGroups[g.id], g.updatedAt),
@@ -150,7 +159,11 @@ class FypRepository extends ChangeNotifier {
         _meetings.removeWhere(
           (m) => _tombstoneWins(_deletedMeetings[m.id], m.updatedAt),
         );
+        _vivaSessions.removeWhere(
+          (v) => _tombstoneWins(_deletedViva[v.id], v.updatedAt),
+        );
       }
+      _migrateLegacyArtifactIds();
       _purgeKnownBadGroups();
       notifyListeners();
     } catch (e) {
@@ -175,6 +188,148 @@ class FypRepository extends ChangeNotifier {
     _groups.removeWhere((g) => _knownBadGroupIds.contains(g.id));
   }
 
+  /// One-time repair: legacy ids (PREFIX-2026-001, year+count) collide across
+  /// devices. Records that never left this phone are safely renamed to a
+  /// unique id so cloud sync can never merge two people's records into one.
+  var _migSeq = 0;
+  void _migrateLegacyArtifactIds() {
+    final legacy = RegExp(r'^[A-Z]+-\d{4}-\d{3}$');
+    String fresh(String id) =>
+        '$id-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}'
+        '${_migSeq++}';
+    List<T> fix<T>(
+      List<T> list,
+      String Function(T) idOf,
+      Map<String, Object?> Function(T) toMap,
+      T Function(Map<dynamic, dynamic>) fromMap,
+    ) => [
+      for (final e in list)
+        legacy.hasMatch(idOf(e))
+            ? fromMap(toMap(e)..['id'] = fresh(idOf(e)))
+            : e,
+    ];
+    _submissions.setAll(
+      0,
+      fix(_submissions, (e) => e.id, submissionToMap, submissionFromMap),
+    );
+    _ideas.setAll(0, fix(_ideas, (e) => e.id, ideaToMap, ideaFromMap));
+    _allocations.setAll(
+      0,
+      fix(_allocations, (e) => e.id, allocationToMap, allocationFromMap),
+    );
+    _proposals.setAll(
+      0,
+      fix(_proposals, (e) => e.id, proposalToMap, proposalFromMap),
+    );
+    _evaluations.setAll(
+      0,
+      fix(_evaluations, (e) => e.id, evaluationToMap, evaluationFromMap),
+    );
+    _meetingLogs.setAll(
+      0,
+      fix(_meetingLogs, (e) => e.id, meetingLogToMap, meetingLogFromMap),
+    );
+    _consents.setAll(
+      0,
+      fix(_consents, (e) => e.id, consentToMap, consentFromMap),
+    );
+    _srsDocuments.setAll(
+      0,
+      fix(_srsDocuments, (e) => e.id, srsToMap, srsFromMap),
+    );
+  }
+
+  // -------- generic FYP artifact sync (submissions/ideas/allocations/
+  // proposals/meeting logs/consents/SRS) ------------------------------------
+  static const List<String> artifactKinds = [
+    'submissions',
+    'ideas',
+    'allocations',
+    'proposals',
+    'meetinglogs',
+    'consents',
+    'srs',
+  ];
+
+  /// Fired after any artifact create/update so the cloud sync pushes it.
+  /// (Wired through the notifyListeners override — spurious fires cost
+  /// nothing because unchanged rows are filtered by the push cache.)
+  void Function()? onArtifactsChanged;
+
+  /// Rows for the cloud push (doc id = record id; content-hashed upstream).
+  List<Map<String, Object?>> artifactRows(String kind) {
+    List<Map<String, Object?>> pack<T>(
+      List<T> list,
+      String Function(T) idOf,
+      Map<String, Object?> Function(T) toMap,
+    ) => [
+      for (final e in list)
+        {'id': idOf(e), 'data': jsonEncode(toMap(e)), 'deleted': false},
+    ];
+    switch (kind) {
+      case 'submissions':
+        return pack(_submissions, (e) => e.id, submissionToMap);
+      case 'ideas':
+        return pack(_ideas, (e) => e.id, ideaToMap);
+      case 'allocations':
+        return pack(_allocations, (e) => e.id, allocationToMap);
+      case 'proposals':
+        return pack(_proposals, (e) => e.id, proposalToMap);
+      case 'meetinglogs':
+        return pack(_meetingLogs, (e) => e.id, meetingLogToMap);
+      case 'consents':
+        return pack(_consents, (e) => e.id, consentToMap);
+      case 'srs':
+        return pack(_srsDocuments, (e) => e.id, srsToMap);
+    }
+    return const [];
+  }
+
+  /// Cloud pull: add-if-missing by id; replace when the content differs (these
+  /// records are edited in place by signing flows — last writer wins, and a
+  /// device's own echo compares equal so nothing loops).
+  void applyCloudArtifactMaps(String kind, List<Map<dynamic, dynamic>> maps) {
+    var changed = false;
+    void merge<T>(
+      List<T> list,
+      T Function(Map<dynamic, dynamic>) fromMap,
+      Map<String, Object?> Function(T) toMap,
+      String Function(T) idOf,
+    ) {
+      for (final m in maps) {
+        final rec = fromMap(m);
+        final id = idOf(rec);
+        if (id.isEmpty) continue;
+        final i = list.indexWhere((e) => idOf(e) == id);
+        if (i == -1) {
+          list.insert(0, rec);
+          changed = true;
+        } else if (jsonEncode(toMap(list[i])) != jsonEncode(toMap(rec))) {
+          list[i] = rec;
+          changed = true;
+        }
+      }
+    }
+
+    switch (kind) {
+      case 'submissions':
+        merge(_submissions, submissionFromMap, submissionToMap, (e) => e.id);
+      case 'ideas':
+        merge(_ideas, ideaFromMap, ideaToMap, (e) => e.id);
+      case 'allocations':
+        merge(_allocations, allocationFromMap, allocationToMap, (e) => e.id);
+      case 'proposals':
+        merge(_proposals, proposalFromMap, proposalToMap, (e) => e.id);
+      case 'meetinglogs':
+        merge(_meetingLogs, meetingLogFromMap, meetingLogToMap, (e) => e.id);
+      case 'consents':
+        merge(_consents, consentFromMap, consentToMap, (e) => e.id);
+      case 'srs':
+        merge(_srsDocuments, srsFromMap, srsToMap, (e) => e.id);
+    }
+    if (changed) notifyListeners();
+  }
+
   Future<void> _persist() async {
     try {
       final file = await _storeFile();
@@ -193,10 +348,12 @@ class FypRepository extends ChangeNotifier {
         'groups': [for (final g in _groups) g.toJson()],
         'panels': [for (final p in _panels) p.toJson()],
         'meetings': [for (final m in _meetings) m.toJson()],
+        'viva': [for (final v in _vivaSessions) v.toJson()],
         'deleted': {
           'groups': _deletedGroups,
           'panels': _deletedPanels,
           'meetings': _deletedMeetings,
+          'viva': _deletedViva,
         },
       };
       await file.writeAsString(jsonEncode(payload));
@@ -210,6 +367,7 @@ class FypRepository extends ChangeNotifier {
   @override
   void notifyListeners() {
     super.notifyListeners();
+    onArtifactsChanged?.call();
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 400), () {
       unawaited(_persist());
@@ -218,8 +376,12 @@ class FypRepository extends ChangeNotifier {
 
   // -------- helpers --------------------------------------------------------
   String _newId(String prefix, int currentCount) {
+    // Cross-device-safe: the old year+count form collided across phones
+    // (every device's first record was e.g. FYP-2026-001), which would merge
+    // DIFFERENT people's records once these sync through the cloud.
     return '$prefix-${DateTime.now().year}-'
-        '${(currentCount + 1).toString().padLeft(3, '0')}';
+        '${(currentCount + 1).toString().padLeft(3, '0')}-'
+        '${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
   }
 
   bool _matchesRollNo(List<FypMember> members, String rollNo) {
@@ -571,7 +733,27 @@ class FypRepository extends ChangeNotifier {
     );
     _evaluations.insert(0, evaluation);
     notifyListeners();
+    onEvaluationsChanged?.call();
+    // Marks entered for the current group move the viva queue forward.
+    _autoAdvanceVivaOnMarks(examinerName, groupId);
     return evaluation;
+  }
+
+  /// Fired after a new evaluation so the cloud sync pushes it (marks must
+  /// reach the coordinator/admin phones and the students' read-only tab).
+  void Function()? onEvaluationsChanged;
+
+  /// Cloud pull: evaluations are insert-only (stable id, never edited), so the
+  /// merge is simply add-if-missing.
+  void applyCloudEvaluations(List<FypEvaluation> incoming) {
+    var changed = false;
+    for (final e in incoming) {
+      if (e.id.isEmpty) continue;
+      if (_evaluations.any((x) => x.id == e.id)) continue;
+      _evaluations.insert(0, e);
+      changed = true;
+    }
+    if (changed) notifyListeners();
   }
 
   // ========================================================================
@@ -966,9 +1148,14 @@ class FypRepository extends ChangeNotifier {
     );
   }
 
-  /// Student edit of their OWN group (allowed only before approval). Replaces
-  /// all editable fields incl. members. Changing the supervisor resets the
-  /// approval to "waiting for supervisor".
+  /// Full edit of a group's editable fields incl. members.
+  ///
+  /// A student editing their OWN group (before approval) resets the approval to
+  /// "waiting for supervisor". The coordinator, who edits from the teacher tab,
+  /// passes [keepApprovalIfSameSupervisor] so fixing a member on an already
+  /// approved group does NOT force the whole approval to restart — the status is
+  /// only reset when the supervisor actually changes (the new supervisor must
+  /// then approve).
   void editGroupFull({
     required String groupId,
     required String title,
@@ -978,10 +1165,14 @@ class FypRepository extends ChangeNotifier {
     required List<FypMember> members,
     required String supervisorName,
     required String coSupervisorName,
+    bool keepApprovalIfSameSupervisor = false,
   }) {
-    _updateGroup(
-      groupId,
-      (g) => g.copyWith(
+    _updateGroup(groupId, (g) {
+      final supervisorChanged =
+          g.supervisorName.trim().toLowerCase() !=
+          supervisorName.trim().toLowerCase();
+      final keepStatus = keepApprovalIfSameSupervisor && !supervisorChanged;
+      final base = g.copyWith(
         title: title,
         phase: phase,
         program: program,
@@ -989,12 +1180,15 @@ class FypRepository extends ChangeNotifier {
         members: List.unmodifiable(members),
         supervisorName: supervisorName,
         coSupervisorName: coSupervisorName,
+      );
+      if (keepStatus) return base;
+      return base.copyWith(
         status: FypGroupStatus.pendingSupervisor,
         supervisorActionBy: '',
         coordinatorActionBy: '',
         rejectedReason: '',
-      ),
-    );
+      );
+    });
   }
 
   /// Coordinator assigns the examiner teachers for a group.
@@ -1036,6 +1230,7 @@ class FypRepository extends ChangeNotifier {
     Map<String, String> groups = const {},
     Map<String, String> panels = const {},
     Map<String, String> meetings = const {},
+    Map<String, String> viva = const {},
   }) {
     var changed = false;
     void take(Map<String, String> incoming, Map<String, String> into) {
@@ -1052,7 +1247,9 @@ class FypRepository extends ChangeNotifier {
     take(groups, _deletedGroups);
     take(panels, _deletedPanels);
     take(meetings, _deletedMeetings);
-    final beforeCounts = _groups.length + _panels.length + _meetings.length;
+    take(viva, _deletedViva);
+    final beforeCounts =
+        _groups.length + _panels.length + _meetings.length + _vivaSessions.length;
     _groups.removeWhere(
       (g) => _tombstoneWins(_deletedGroups[g.id], g.updatedAt),
     );
@@ -1062,7 +1259,14 @@ class FypRepository extends ChangeNotifier {
     _meetings.removeWhere(
       (m) => _tombstoneWins(_deletedMeetings[m.id], m.updatedAt),
     );
-    if (beforeCounts != _groups.length + _panels.length + _meetings.length) {
+    _vivaSessions.removeWhere(
+      (v) => _tombstoneWins(_deletedViva[v.id], v.updatedAt),
+    );
+    if (beforeCounts !=
+        _groups.length +
+            _panels.length +
+            _meetings.length +
+            _vivaSessions.length) {
       changed = true;
     }
     if (changed) notifyListeners();
@@ -1221,6 +1425,28 @@ class FypRepository extends ChangeNotifier {
     setGroupExaminers(groupId: groupId, examiners: panel.members);
   }
 
+  /// Groups whose examiner set matches this panel's members — i.e. the groups
+  /// this panel has been assigned to examine. Sorted by phase then title.
+  List<FypGroup> groupsForPanel(FypPanel panel) {
+    final want = panel.members
+        .map((e) => e.trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    if (want.isEmpty) return const [];
+    final out = _groups.where((g) {
+      final have = g.examiners
+          .map((e) => e.trim().toLowerCase())
+          .where((e) => e.isNotEmpty)
+          .toSet();
+      return have.length == want.length && have.containsAll(want);
+    }).toList();
+    out.sort((a, b) {
+      final p = a.phase.index.compareTo(b.phase.index);
+      return p != 0 ? p : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+    return out;
+  }
+
   void Function()? onPanelsChanged;
 
   void applyCloudPanels(List<FypPanel> incoming) {
@@ -1326,6 +1552,170 @@ class FypRepository extends ChangeNotifier {
             g.examiners.any((e) => _matchesTeacher(e, teacherName)),
       );
     }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  }
+
+  // ========================================================================
+  // Viva turn queue — the examiner's live calling order
+  // ========================================================================
+  void Function()? onVivaChanged;
+
+  void _vivaTouched() {
+    notifyListeners();
+    onVivaChanged?.call();
+  }
+
+  FypVivaSession createVivaSession({
+    required String examinerName,
+    required String title,
+    required int minutesPerGroup,
+    required List<String> groupIds,
+  }) {
+    final now = DateTime.now();
+    final session = FypVivaSession(
+      id: 'VIVA${now.millisecondsSinceEpoch}',
+      examinerName: examinerName.trim(),
+      title: title.trim().isEmpty ? 'Viva' : title.trim(),
+      minutesPerGroup: minutesPerGroup < 1 ? 15 : minutesPerGroup,
+      groupIds: List.unmodifiable(groupIds),
+      currentIndex: 0,
+      status: 'running',
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    );
+    _vivaSessions.insert(0, session);
+    _vivaTouched();
+    return session;
+  }
+
+  void _updateViva(String id, FypVivaSession Function(FypVivaSession) change) {
+    final i = _vivaSessions.indexWhere((v) => v.id == id);
+    if (i == -1) return;
+    _vivaSessions[i] = change(_vivaSessions[i]);
+    _vivaTouched();
+  }
+
+  /// Moves the queue to the next group; finishes the session after the last.
+  void advanceViva(String sessionId) {
+    _updateViva(sessionId, (v) {
+      final next = v.currentIndex + 1;
+      return next >= v.groupIds.length
+          ? v.copyWith(currentIndex: next, status: 'finished')
+          : v.copyWith(currentIndex: next);
+    });
+  }
+
+  void finishViva(String sessionId) {
+    _updateViva(sessionId, (v) => v.copyWith(status: 'finished'));
+  }
+
+  /// The current group is not ready (students late/absent): send it to the
+  /// END of the queue and start the next group's turn immediately. The held
+  /// group keeps its place in the session and gets a fresh estimated time.
+  void holdCurrentViva(String sessionId) {
+    _updateViva(sessionId, (v) {
+      final ids = List<String>.of(v.groupIds);
+      if (v.currentIndex >= ids.length - 1) return v; // nothing waiting after
+      final held = ids.removeAt(v.currentIndex);
+      ids.add(held);
+      // currentIndex now points at what was the NEXT group.
+      return v.copyWith(groupIds: List.unmodifiable(ids));
+    });
+  }
+
+  /// Bring a WAITING group forward so it is called right after the current
+  /// one (a group that arrived early / must leave soon). Done and current
+  /// groups are left alone.
+  void moveVivaGroupNext(String sessionId, String groupId) {
+    _updateViva(sessionId, (v) {
+      final ids = List<String>.of(v.groupIds);
+      final from = ids.indexOf(groupId);
+      if (from <= v.currentIndex) return v;
+      final id = ids.removeAt(from);
+      ids.insert(v.currentIndex + 1, id);
+      return v.copyWith(groupIds: List.unmodifiable(ids));
+    });
+  }
+
+  void deleteVivaSession(String sessionId) {
+    _deletedViva[sessionId] = DateTime.now().toIso8601String();
+    _vivaSessions.removeWhere((v) => v.id == sessionId);
+    _vivaTouched();
+  }
+
+  void applyCloudVivaSessions(List<FypVivaSession> incoming) {
+    var changed = false;
+    for (final v in incoming) {
+      if (v.id.isEmpty) continue;
+      if (_tombstoneWins(_deletedViva[v.id], v.updatedAt)) continue;
+      if (_deletedViva.remove(v.id) != null) changed = true;
+      final i = _vivaSessions.indexWhere((e) => e.id == v.id);
+      if (i == -1) {
+        _vivaSessions.insert(0, v);
+        changed = true;
+      } else if (v.updatedAt.isAfter(_vivaSessions[i].updatedAt)) {
+        _vivaSessions[i] = v;
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
+  }
+
+  /// The examiner's most recent running session (one live queue at a time).
+  FypVivaSession? runningVivaForExaminer(String examinerName) {
+    for (final v in _vivaSessions) {
+      if (v.isRunning && _matchesTeacher(v.examinerName, examinerName)) {
+        return v;
+      }
+    }
+    return null;
+  }
+
+  /// A running session this teacher is INVOLVED in: either they started it or
+  /// they sit on the examining panel of any group in its queue. Panels examine
+  /// jointly, so every member shares the same live queue.
+  FypVivaSession? runningVivaInvolvingExaminer(String examinerName) {
+    final own = runningVivaForExaminer(examinerName);
+    if (own != null) return own;
+    for (final v in _vivaSessions) {
+      if (!v.isRunning) continue;
+      for (final gid in v.groupIds) {
+        final g = _groups.where((e) => e.id == gid).firstOrNull;
+        if (g != null &&
+            g.examiners.any((e) => _matchesTeacher(e, examinerName))) {
+          return v;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// The running queue that contains [groupId] (for the student banner),
+  /// or null. Prefers the session where the group is still waiting/current.
+  FypVivaSession? runningVivaForGroup(String groupId) {
+    for (final v in _vivaSessions) {
+      if (v.isRunning && v.groupIds.contains(groupId)) return v;
+    }
+    return null;
+  }
+
+  /// Marks entered for the CURRENT group of a running session auto-advance
+  /// the turn — called from [createEvaluation]. Panels examine jointly, so the
+  /// session OWNER or ANY examiner on the current group's panel advances the
+  /// shared queue.
+  void _autoAdvanceVivaOnMarks(String examinerName, String groupId) {
+    final gid = groupId.trim();
+    if (gid.isEmpty) return;
+    for (final v in _vivaSessions) {
+      if (!v.isRunning || v.currentGroupId != gid) continue;
+      final g = _groups.where((e) => e.id == gid).firstOrNull;
+      final onPanel =
+          g != null && g.examiners.any((e) => _matchesTeacher(e, examinerName));
+      if (_matchesTeacher(v.examinerName, examinerName) || onPanel) {
+        advanceViva(v.id);
+        return;
+      }
+    }
   }
 }
 

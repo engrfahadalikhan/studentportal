@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../assessment/assessment_models.dart';
+import '../connect/connect_home_page.dart';
+import '../connect/event_home_page.dart';
+import '../connect/connect_models.dart';
 import '../features/admin_feature_controls_page.dart';
 import '../features/admin_data_sync_page.dart';
+import '../features/admin_password_manager_page.dart';
 import '../features/answer_sheet_tracker_page.dart';
 import '../fyp/fyp_groups_tabs.dart';
 import '../features/assessment_access_page.dart';
@@ -13,6 +17,7 @@ import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
 import '../services/device_binding_service.dart';
+import '../services/login_store.dart';
 import '../theme/app_colors.dart';
 import '../theme/theme_controller.dart';
 import '../theme/theme_picker.dart';
@@ -1599,6 +1604,42 @@ class _QuickActionsRow extends StatelessWidget {
                 ),
               ),
               _QuickActionData(
+                title: 'AUST Connect',
+                icon: Icons.forum_outlined,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ConnectHomePage(
+                      identity: ConnectIdentity(
+                        name: LoginStore.instance.currentUserName.trim().isEmpty
+                            ? 'Admin'
+                            : LoginStore.instance.currentUserName.trim(),
+                        role: 'admin',
+                        id: 'admin',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'AUST Event',
+                icon: Icons.celebration_outlined,
+                color: AppColors.violet600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => EventHomePage(
+                      identity: ConnectIdentity(
+                        name: LoginStore.instance.currentUserName.trim().isEmpty
+                            ? 'Admin'
+                            : LoginStore.instance.currentUserName.trim(),
+                        role: 'admin',
+                        id: 'admin',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _QuickActionData(
                 title: 'Answer Sheets',
                 icon: Icons.assignment_returned_outlined,
                 color: AppColors.teal600,
@@ -1636,6 +1677,17 @@ class _QuickActionsRow extends StatelessWidget {
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => ChangePasswordPage(repository: repository),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Manage Passwords',
+                icon: Icons.lock_reset_rounded,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        AdminPasswordManagerPage(repository: repository),
                   ),
                 ),
               ),
@@ -1766,9 +1818,29 @@ class _DeviceAssignmentCard extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: b.allowAll,
+                  onChanged: (v) =>
+                      DeviceBindingService.instance.setAllowAll(v),
+                  title: const Text(
+                    'Allowed for ALL (students + teachers + admin)',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text(
+                    'Open device: anyone can sign in and the first login never '
+                    'claims it. Turn off to use the assignments below.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+                const SizedBox(height: 4),
                 Text(
-                  entries.isEmpty
+                  b.allowAll
+                      ? 'Everyone can sign in on this device. Assignments '
+                            'below are kept but not enforced while this is on.'
+                      : entries.isEmpty
                       ? 'Not assigned yet. The first student or teacher who logs '
                             'in will claim this device — or add people below to '
                             'allow several.'

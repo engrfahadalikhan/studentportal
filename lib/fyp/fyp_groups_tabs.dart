@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:printing/printing.dart';
 
 import '../assessment/registration_course_data.dart' as registration;
 import '../data/local_student_enrollments.dart';
@@ -8,8 +11,12 @@ import '../services/cloud_sync_service.dart';
 import '../services/login_store.dart';
 import '../ui/student_portal_shell.dart';
 import 'fyp_group_models.dart';
+import 'fyp_groups_pdf.dart';
+import 'fyp_marks_summary_pdf.dart';
 import 'fyp_models.dart';
+import 'fyp_panel_invite_pdf.dart';
 import 'fyp_repository.dart';
+import 'fyp_viva_page.dart';
 
 const _green = Color(0xFF047857);
 const _red = Color(0xFFB91C1C);
@@ -77,6 +84,14 @@ class FypTeacherGroupsTab extends StatelessWidget {
                 ),
               ),
             ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const FypSearchPage()),
+              ),
+              icon: const Icon(Icons.search_rounded, size: 18),
+              label: const Text('Search'),
+            ),
           ],
         ),
         if (meetings.isNotEmpty) ...[
@@ -133,7 +148,27 @@ class FypTeacherGroupsTab extends StatelessWidget {
         ],
         if (examinerDuties.isNotEmpty) ...[
           const SizedBox(height: 16),
-          _sectionTitle('My examiner duties'),
+          Row(
+            children: [
+              Expanded(child: _sectionTitle('My examiner duties')),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => FypVivaPage(examinerName: teacherName),
+                  ),
+                ),
+                icon: const Icon(Icons.record_voice_over_rounded, size: 18),
+                label: Text(
+                  FypRepository.instance.runningVivaInvolvingExaminer(
+                            teacherName,
+                          ) ==
+                          null
+                      ? 'Viva queue'
+                      : 'Viva LIVE',
+                ),
+              ),
+            ],
+          ),
           for (final g in examinerDuties)
             _GroupCard(
               group: g,
@@ -143,34 +178,64 @@ class FypTeacherGroupsTab extends StatelessWidget {
             ),
         ],
         const SizedBox(height: 16),
-        _sectionTitle('All groups (${_repo.groups.length})'),
-        if (_repo.groups.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(18),
-            child: Text(
-              'No groups yet. Teachers or students create them; the '
-              'coordinator allots.',
-              style: TextStyle(color: PortalColors.subtleText),
+        // A teacher sees only THEIR OWN groups (supervisor / co-supervisor /
+        // examiner). The coordinator keeps the complete list — they must be
+        // able to allot and assign examiners across the whole batch.
+        ...() {
+          final visible = isCoordinator
+              ? _repo.groups.toList()
+              : () {
+                  final own = <String, FypGroup>{};
+                  for (final g in _repo.groupsForSupervisor(teacherName)) {
+                    own[g.id] = g;
+                  }
+                  for (final g in examinerDuties) {
+                    own[g.id] = g;
+                  }
+                  return own.values.toList();
+                }();
+          return <Widget>[
+            _sectionTitle(
+              isCoordinator
+                  ? 'All groups (${visible.length})'
+                  : 'My groups (${visible.length})',
             ),
+            if (visible.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(18),
+                child: Text(
+                  isCoordinator
+                      ? 'No groups yet. Teachers or students create them; the '
+                            'coordinator allots.'
+                      : 'No groups under you yet — you see only groups where '
+                            'you are the supervisor, co-supervisor or '
+                            'examiner.',
+                  style: const TextStyle(color: PortalColors.subtleText),
+                ),
+              ),
+            for (final g in visible)
+              _GroupCard(
+                group: g,
+                trailing: isCoordinator
+                    ? _coordinatorGroupActions(context, g)
+                    : null,
+              ),
+          ];
+        }(),
+        // The whole-batch "students without a group" list is coordinator-only;
+        // a regular teacher works with their own groups.
+        if (isCoordinator) ...[
+          const SizedBox(height: 16),
+          _sectionTitle('Students without a group'),
+          const Text(
+            '7th semester students appear under FYP-II, 8th semester under '
+            'FYP-III. Tap "Group" to form theirs.',
+            style: TextStyle(fontSize: 11.5, color: PortalColors.subtleText),
           ),
-        for (final g in _repo.groups)
-          _GroupCard(
-            group: g,
-            trailing: isCoordinator && g.status == FypGroupStatus.approved
-                ? Align(
-                    alignment: Alignment.centerLeft,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _assignExaminers(context, g),
-                      icon: const Icon(Icons.gavel_rounded, size: 18),
-                      label: Text(
-                        g.examiners.isEmpty
-                            ? 'Assign examiners'
-                            : 'Examiners (${g.examiners.length})',
-                      ),
-                    ),
-                  )
-                : null,
-          ),
+          _ungroupedPhaseSection(context, isCoordinator, FypPhase.fyp2),
+          _ungroupedPhaseSection(context, isCoordinator, FypPhase.fyp3),
+        ],
+        const SizedBox(height: 24),
       ],
     );
   }
@@ -419,20 +484,185 @@ class FypTeacherGroupsTab extends StatelessWidget {
     }
   }
 
-  Future<void> _createGroupSheet(
+  /// The coordinator's per-group actions: edit the group (title / members /
+  /// supervisor) on any group, plus assign examiners once it is approved.
+  Widget _coordinatorGroupActions(BuildContext context, FypGroup g) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          OutlinedButton.icon(
+            onPressed: () => _editGroupAsCoordinator(context, g),
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            label: const Text('Edit members'),
+          ),
+          if (g.status == FypGroupStatus.approved)
+            OutlinedButton.icon(
+              onPressed: () => _assignExaminers(context, g),
+              icon: const Icon(Icons.gavel_rounded, size: 18),
+              label: Text(
+                g.examiners.isEmpty
+                    ? 'Assign examiners'
+                    : 'Examiners (${g.examiners.length})',
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Coordinator edits an existing group. Reuses the group form in edit mode;
+  /// keeping the approval intact unless the supervisor is changed.
+  Future<void> _editGroupAsCoordinator(
     BuildContext context,
-    bool isCoordinator,
+    FypGroup g,
   ) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (_) => _GroupForm(
+        teacherNames: teacherNames,
+        defaultSupervisor: g.supervisorName,
+        creatorRole: 'coordinator',
+        creatorName: teacherName,
+        allowDirectAllot: true,
+        studentChoices: fypEligibleStudents(),
+        existing: g,
+        coordinatorEdit: true,
+      ),
+    );
+  }
+
+  Future<void> _createGroupSheet(
+    BuildContext context,
+    bool isCoordinator, {
+    FypPhase? phase,
+    FypMember? firstMember,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
       builder: (_) => _GroupForm(
         teacherNames: teacherNames,
         defaultSupervisor: teacherName,
         creatorRole: 'teacher',
         creatorName: teacherName,
         allowDirectAllot: isCoordinator,
+        studentChoices: fypEligibleStudents(),
+        firstMember: firstMember,
+        defaultPhase: phase,
       ),
+    );
+  }
+
+  Future<void> _downloadPhasePdf(BuildContext context, FypPhase phase) async {
+    final bytes = await buildFypPhaseReportPdf(
+      phase: phase,
+      groups: _repo.groupsForPhase(phase),
+      ungrouped: fypUngroupedForPhase(phase),
+      serialOf: _repo.serialOf,
+    );
+    await Printing.sharePdf(
+      bytes: bytes,
+      filename: 'FYP_${phase.name}_report.pdf',
+    );
+  }
+
+  Widget _ungroupedPhaseSection(
+    BuildContext context,
+    bool isCoordinator,
+    FypPhase phase,
+  ) {
+    final students = fypUngroupedForPhase(phase);
+    if (students.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${phase.label} — no group yet (${students.length})',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Download PDF',
+              onPressed: () => _downloadPhasePdf(context, phase),
+              icon: const Icon(
+                Icons.picture_as_pdf_outlined,
+                color: _red,
+                size: 20,
+              ),
+            ),
+          ],
+        ),
+        for (final s in students)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: PortalColors.cardBorder),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        s.studentName.isEmpty ? s.rollNo : s.studentName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13,
+                        ),
+                      ),
+                      Text(
+                        '${s.rollNo} · ${s.program} · Sem ${s.semester}'
+                        '${s.section.isEmpty ? '' : ' · ${s.section}'}',
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: PortalColors.subtleText,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => _createGroupSheet(
+                    context,
+                    isCoordinator,
+                    phase: phase,
+                    firstMember: FypMember(
+                      serialNo: 1,
+                      rollNo: s.rollNo,
+                      name: s.studentName.isEmpty ? s.rollNo : s.studentName,
+                      email: '${s.rollNo}@student.local',
+                    ),
+                  ),
+                  icon: const Icon(Icons.group_add_outlined, size: 18),
+                  label: const Text('Group'),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
@@ -454,6 +684,46 @@ class FypStudentGroupTab extends StatelessWidget {
 
   FypRepository get _repo => FypRepository.instance;
 
+  /// Small live line telling the student whether their group has reached the
+  /// cloud — "group upload hua ya nahin" was undiagnosable without this.
+  Widget _syncStatusLine() {
+    return AnimatedBuilder(
+      animation: CloudSyncService.instance,
+      builder: (context, _) {
+        final s = CloudSyncService.instance;
+        final t = s.lastSyncAt;
+        final when = t == null ? '' : DateFormat('dd MMM, hh:mm a').format(t);
+        final waiting = s.status.startsWith('Waiting');
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              Icon(
+                waiting ? Icons.cloud_off_rounded : Icons.cloud_done_rounded,
+                size: 15,
+                color: waiting ? _amber : _green,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  waiting
+                      ? 'Waiting for internet — changes will upload when '
+                            'connected.'
+                      : 'Synced${when.isEmpty ? '' : ' · $when'}',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: waiting ? _amber : PortalColors.subtleText,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final mine = _repo.groupForRollNo(student.rollNo);
@@ -462,6 +732,7 @@ class FypStudentGroupTab extends StatelessWidget {
       return ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _syncStatusLine(),
           const Text(
             'You are not in any FYP group yet. Create yours — pick your '
             'supervisor, then wait for the supervisor and coordinator '
@@ -505,6 +776,11 @@ class FypStudentGroupTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _syncStatusLine(),
+        // Live viva flow: which group is on the floor right now, who is next,
+        // and when THIS group's own turn is expected.
+        if (_repo.runningVivaForGroup(mine.id) != null)
+          fypVivaNotice(_repo.runningVivaForGroup(mine.id)!, mine, _repo),
         _GroupCard(group: mine, showTimeline: true),
         if (meetings.isNotEmpty) ...[
           const SizedBox(height: 16),
@@ -766,6 +1042,7 @@ class _GroupForm extends StatefulWidget {
     this.firstMember,
     this.existing,
     this.defaultPhase,
+    this.coordinatorEdit = false,
   });
 
   final List<String> teacherNames;
@@ -781,6 +1058,10 @@ class _GroupForm extends StatefulWidget {
 
   /// When set, the form EDITS this existing group instead of creating one.
   final FypGroup? existing;
+
+  /// The coordinator is editing (from the teacher tab): keep an approved
+  /// group's approval intact unless the supervisor is changed.
+  final bool coordinatorEdit;
 
   @override
   State<_GroupForm> createState() => _GroupFormState();
@@ -837,6 +1118,67 @@ class _GroupFormState extends State<_GroupForm> {
     super.dispose();
   }
 
+  /// Students already occupied by a group disappear from the dropdown — only
+  /// free students can be picked. The creator and (in edit mode) the group's
+  /// own current members stay selectable.
+  List<StudentRecord> _selectableChoices() {
+    final occupied = FypRepository.instance.groupedRolls();
+    final keep = <String>{
+      if (widget.firstMember != null)
+        widget.firstMember!.rollNo.trim().toLowerCase(),
+      if (widget.existing != null)
+        for (final m in widget.existing!.members) m.rollNo.trim().toLowerCase(),
+    };
+    return [
+      for (final s in widget.studentChoices)
+        if (!occupied.contains(s.rollNo.trim().toLowerCase()) ||
+            keep.contains(s.rollNo.trim().toLowerCase()))
+          s,
+    ];
+  }
+
+  Widget _memberRow(int i, List<StudentRecord> selectable) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          if (widget.studentChoices.isEmpty) ...[
+            Expanded(
+              flex: 2,
+              child: TextField(
+                controller: _rolls[i],
+                decoration: InputDecoration(
+                  labelText: 'Roll ${i + 1}',
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 3,
+              child: TextField(
+                controller: _names[i],
+                decoration: InputDecoration(
+                  labelText: 'Name ${i + 1}',
+                  isDense: true,
+                ),
+              ),
+            ),
+          ] else
+            Expanded(
+              child: _StudentMemberDropdown(
+                index: i,
+                rollController: _rolls[i],
+                nameController: _names[i],
+                choices: selectable,
+                locked: i == 0 && widget.creatorRole == 'student',
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   void _submit() {
     final members = <FypMember>[];
     for (var i = 0; i < _rolls.length; i++) {
@@ -859,6 +1201,19 @@ class _GroupFormState extends State<_GroupForm> {
     if (members.isEmpty) {
       setState(() => _err = 'Add at least one member (roll number).');
       return;
+    }
+    // The same student cannot fill two member slots (a student once created a
+    // "group" with himself twice via the dropdown).
+    final seenRolls = <String>{};
+    for (final m in members) {
+      if (!seenRolls.add(m.rollNo.trim().toLowerCase())) {
+        setState(
+          () => _err =
+              '${m.rollNo} is selected more than once — a group cannot '
+              'contain the same student twice.',
+        );
+        return;
+      }
     }
     if ((_supervisor ?? '').trim().isEmpty) {
       setState(() => _err = 'Pick a supervisor.');
@@ -888,7 +1243,9 @@ class _GroupFormState extends State<_GroupForm> {
         members: members,
         supervisorName: _supervisor!,
         coSupervisorName: _coSupervisor,
+        keepApprovalIfSameSupervisor: widget.coordinatorEdit,
       );
+      CloudSyncService.instance.pushFypNow();
       Navigator.pop(context);
       return;
     }
@@ -903,6 +1260,7 @@ class _GroupFormState extends State<_GroupForm> {
       createdByRole: _directAllot ? 'coordinator' : widget.creatorRole,
       createdByName: widget.creatorName,
     );
+    CloudSyncService.instance.pushFypNow();
     Navigator.pop(context);
   }
 
@@ -1005,45 +1363,7 @@ class _GroupFormState extends State<_GroupForm> {
           ),
           const SizedBox(height: 6),
           for (var i = 0; i < _rolls.length; i++)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  if (widget.studentChoices.isEmpty) ...[
-                    Expanded(
-                      flex: 2,
-                      child: TextField(
-                        controller: _rolls[i],
-                        decoration: InputDecoration(
-                          labelText: 'Roll ${i + 1}',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      flex: 3,
-                      child: TextField(
-                        controller: _names[i],
-                        decoration: InputDecoration(
-                          labelText: 'Name ${i + 1}',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                  ] else
-                    Expanded(
-                      child: _StudentMemberDropdown(
-                        index: i,
-                        rollController: _rolls[i],
-                        nameController: _names[i],
-                        choices: widget.studentChoices,
-                        locked: i == 0 && widget.creatorRole == 'student',
-                      ),
-                    ),
-                ],
-              ),
-            ),
+            _memberRow(i, _selectableChoices()),
           if (widget.allowDirectAllot)
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
@@ -1184,7 +1504,8 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 5, vsync: this);
+    _tabs = TabController(length: 6, vsync: this);
+    unawaited(_refreshFyp(force: false));
   }
 
   @override
@@ -1212,12 +1533,60 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     return list;
   }
 
+  Future<void> _refreshFyp({bool force = true}) {
+    return CloudSyncService.instance.pullFypWorkspace(force: force);
+  }
+
+  /// Force-pulls the FYP workspace (groups, panels, viva AND the latest
+  /// examiner marks) from Firebase and confirms it — so the coordinator never
+  /// has to wait for the background refresh to see freshly entered marks.
+  Future<void> _pullLatestWithFeedback() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('Pulling latest marks & FYP data…'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+    try {
+      await _refreshFyp(force: true);
+    } catch (_) {}
+    if (!mounted) return;
+    messenger
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(content: Text('Latest FYP marks pulled from cloud.')),
+      );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.embedInParent) {
       return Column(
         children: [
-          Material(color: Colors.white, child: _phaseTabBar()),
+          Material(
+            color: Colors.white,
+            child: Row(
+              children: [
+                Expanded(child: _phaseTabBar()),
+                IconButton(
+                  tooltip: 'Pull latest marks',
+                  onPressed: () => unawaited(_pullLatestWithFeedback()),
+                  icon: const Icon(Icons.cloud_download_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Search student / supervisor',
+                  onPressed: _openSearch,
+                  icon: const Icon(Icons.search_rounded),
+                ),
+                IconButton(
+                  tooltip: 'Marks summary (PDF)',
+                  onPressed: _downloadMarksSummary,
+                  icon: const Icon(Icons.grading_rounded),
+                ),
+              ],
+            ),
+          ),
           Expanded(child: _content()),
         ],
       );
@@ -1225,9 +1594,58 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
 
     return Scaffold(
       backgroundColor: PortalColors.pageBackground,
-      appBar: AppBar(title: Text(widget.title), bottom: _phaseTabBar()),
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(
+            tooltip: 'Pull latest marks',
+            onPressed: () => unawaited(_pullLatestWithFeedback()),
+            icon: const Icon(Icons.cloud_download_outlined),
+          ),
+          IconButton(
+            tooltip: 'Search student / supervisor',
+            onPressed: _openSearch,
+            icon: const Icon(Icons.search_rounded),
+          ),
+          IconButton(
+            tooltip: 'Marks summary (PDF)',
+            onPressed: _downloadMarksSummary,
+            icon: const Icon(Icons.grading_rounded),
+          ),
+        ],
+        bottom: _phaseTabBar(),
+      ),
       body: _content(),
     );
+  }
+
+  /// One consolidated sheet: every group per phase with each examiner's
+  /// Proposal/SRS marks, the combined average, and who is still pending — for
+  /// after the viva days. Pulls the freshest marks from Firebase first so the
+  /// summary is never stale.
+  Future<void> _downloadMarksSummary() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('Fetching latest marks from cloud…'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+    try {
+      await _refreshFyp(force: true);
+    } catch (_) {}
+    final bytes = await buildFypMarksSummaryPdf(
+      groups: _repo.groups,
+      evaluations: _repo.evaluations,
+      serialOf: _repo.serialOf,
+    );
+    await Printing.sharePdf(bytes: bytes, filename: 'FYP_marks_summary.pdf');
+  }
+
+  void _openSearch() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const FypSearchPage()));
   }
 
   TabBar _phaseTabBar() {
@@ -1236,6 +1654,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
       isScrollable: true,
       tabAlignment: TabAlignment.start,
       tabs: const [
+        Tab(text: 'Pending'),
         Tab(text: 'FYP-I'),
         Tab(text: 'FYP-II'),
         Tab(text: 'FYP-III'),
@@ -1259,6 +1678,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
               child: TabBarView(
                 controller: _tabs,
                 children: [
+                  _pendingTab(context),
                   _phaseTab(context, FypPhase.fyp1),
                   _phaseTab(context, FypPhase.fyp2),
                   _phaseTab(context, FypPhase.fyp3),
@@ -1273,93 +1693,140 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     );
   }
 
+  bool _isPendingGroup(FypGroup group) =>
+      group.status == FypGroupStatus.pendingSupervisor ||
+      group.status == FypGroupStatus.pendingCoordinator;
+
+  List<FypGroup> _pendingGroups() =>
+      _repo.groups.where(_isPendingGroup).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+  Widget _refreshable(Widget child) {
+    return RefreshIndicator(onRefresh: _refreshFyp, child: child);
+  }
+
+  Widget _pendingTab(BuildContext context) {
+    final pending = _pendingGroups();
+    return _refreshable(
+      ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(14),
+        children: [
+          Text(
+            'Coordinator queue (${pending.length})',
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Waiting for supervisor and waiting for coordinator groups appear here.',
+            style: TextStyle(fontSize: 11.5, color: PortalColors.subtleText),
+          ),
+          const SizedBox(height: 10),
+          if (pending.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(18),
+              child: Text(
+                'No pending groups right now.',
+                style: TextStyle(color: PortalColors.subtleText),
+              ),
+            ),
+          for (final g in pending) _adminCard(context, g),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
   // ------------------------------------------------------------------ phase tab
   Widget _phaseTab(BuildContext context, FypPhase phase) {
     final groups = _repo.groupsForPhase(phase);
-    final pending = groups
-        .where(
-          (g) =>
-              g.status == FypGroupStatus.pendingSupervisor ||
-              g.status == FypGroupStatus.pendingCoordinator,
-        )
+    final pending = groups.where(_isPendingGroup).toList();
+    final pendingIds = {for (final group in pending) group.id};
+    final settled = groups
+        .where((group) => !pendingIds.contains(group.id))
         .toList();
-    final grouped = _repo.groupedRolls();
-    final ungrouped = fypEligibleStudents()
-        .where((s) => !grouped.contains(s.rollNo.trim().toLowerCase()))
-        .toList();
-    return ListView(
-      padding: const EdgeInsets.all(14),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '${phase.label} groups (${groups.length})',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w900,
-                  fontSize: 15,
+    final ungrouped = fypUngroupedForPhase(phase);
+    return _refreshable(
+      ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(14),
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${phase.label} groups (${groups.length})',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 15,
+                  ),
                 ),
               ),
+              IconButton(
+                tooltip: 'Download PDF',
+                onPressed: () => _downloadPhasePdf(context, phase),
+                icon: const Icon(Icons.picture_as_pdf_outlined, color: _red),
+              ),
+              FilledButton.icon(
+                onPressed: () => _openCreateForm(context, phase: phase),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('Create'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (pending.isNotEmpty) ...[
+            const Text(
+              'Pending approval',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
             ),
-            FilledButton.icon(
-              onPressed: () => _openCreateForm(context, phase: phase),
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text('Create'),
-            ),
+            const SizedBox(height: 6),
+            for (final g in pending) _adminCard(context, g),
+            const SizedBox(height: 8),
           ],
-        ),
-        const SizedBox(height: 10),
-        if (pending.isNotEmpty) ...[
+          if (groups.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(18),
+              child: Text(
+                'No groups in this phase yet.',
+                style: TextStyle(color: PortalColors.subtleText),
+              ),
+            ),
+          for (final g in settled) _adminCard(context, g),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Icon(Icons.person_off_outlined, size: 18, color: _amber),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Students without a group (${ungrouped.length})',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
           const Text(
-            'Pending approval',
-            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+            'Final-year students (semester 7–8) not yet in any group.',
+            style: TextStyle(fontSize: 11.5, color: PortalColors.subtleText),
           ),
-          const SizedBox(height: 6),
-          for (final g in pending) _adminCard(context, g),
           const SizedBox(height: 8),
-        ],
-        if (groups.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(18),
-            child: Text(
-              'No groups in this phase yet.',
-              style: TextStyle(color: PortalColors.subtleText),
-            ),
-          ),
-        for (final g in groups) _adminCard(context, g),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            const Icon(Icons.person_off_outlined, size: 18, color: _amber),
-            const SizedBox(width: 6),
-            Expanded(
+          if (ungrouped.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(12),
               child: Text(
-                'Students without a group (${ungrouped.length})',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w900,
-                  fontSize: 14,
-                ),
+                'Every eligible student is already in a group.',
+                style: TextStyle(color: PortalColors.subtleText),
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'Final-year students (semester 7–8) not yet in any group.',
-          style: TextStyle(fontSize: 11.5, color: PortalColors.subtleText),
-        ),
-        const SizedBox(height: 8),
-        if (ungrouped.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text(
-              'Every eligible student is already in a group.',
-              style: TextStyle(color: PortalColors.subtleText),
-            ),
-          ),
-        for (final s in ungrouped) _ungroupedTile(context, s, phase),
-        const SizedBox(height: 24),
-      ],
+          for (final s in ungrouped) _ungroupedTile(context, s, phase),
+          const SizedBox(height: 24),
+        ],
+      ),
     );
   }
 
@@ -1440,6 +1907,19 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     );
   }
 
+  Future<void> _downloadPhasePdf(BuildContext context, FypPhase phase) async {
+    final bytes = await buildFypPhaseReportPdf(
+      phase: phase,
+      groups: _repo.groupsForPhase(phase),
+      ungrouped: fypUngroupedForPhase(phase),
+      serialOf: _repo.serialOf,
+    );
+    await Printing.sharePdf(
+      bytes: bytes,
+      filename: 'FYP_${phase.name}_report.pdf',
+    );
+  }
+
   // --------------------------------------------------------------- panels tab
   Widget _panelsTab(BuildContext context) {
     final panels = _repo.panels;
@@ -1502,6 +1982,15 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
                         ),
                       ),
                     ),
+                    IconButton(
+                      tooltip: 'Examiner invite PDF',
+                      onPressed: () => _panelInvitePdf(context, p),
+                      icon: const Icon(
+                        Icons.picture_as_pdf_outlined,
+                        color: _red,
+                        size: 20,
+                      ),
+                    ),
                     OutlinedButton.icon(
                       onPressed: () => _panelDialog(context, p),
                       icon: const Icon(Icons.edit_outlined, size: 18),
@@ -1522,11 +2011,138 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
                   p.members.isEmpty ? 'No members' : p.members.join(', '),
                   style: const TextStyle(fontSize: 12.5),
                 ),
+                Builder(
+                  builder: (_) {
+                    final n = _repo.groupsForPanel(p).length;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        '$n group${n == 1 ? '' : 's'} assigned to this panel',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: PortalColors.subtleText,
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
       ],
     );
+  }
+
+  /// Collects a date / time / venue, then builds & shares the external-examiner
+  /// invitation PDF for this panel (its assigned groups + duty schedule).
+  Future<void> _panelInvitePdf(BuildContext context, FypPanel panel) async {
+    final groups = _repo.groupsForPanel(panel);
+    var date = DateTime.now().add(const Duration(days: 1));
+    var time = const TimeOfDay(hour: 9, minute: 0);
+    final venue = TextEditingController();
+    final perGroup = TextEditingController(text: '20');
+
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: Text(
+            panel.name.trim().isEmpty ? 'Examiner invite PDF' : panel.name,
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '${groups.length} group(s) assigned to this panel.',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: PortalColors.subtleText,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final now = DateTime.now();
+                    final picked = await showDatePicker(
+                      context: ctx,
+                      initialDate: date,
+                      firstDate: DateTime(now.year - 1),
+                      lastDate: DateTime(now.year + 2),
+                    );
+                    if (picked != null) setLocal(() => date = picked);
+                  },
+                  icon: const Icon(Icons.calendar_today_rounded, size: 18),
+                  label: Text('Date: ${date.day}/${date.month}/${date.year}'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final picked = await showTimePicker(
+                      context: ctx,
+                      initialTime: time,
+                    );
+                    if (picked != null) setLocal(() => time = picked);
+                  },
+                  icon: const Icon(Icons.access_time_rounded, size: 18),
+                  label: Text('Start time: ${time.format(ctx)}'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: perGroup,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Minutes per group',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: venue,
+                  decoration: const InputDecoration(
+                    labelText: 'Venue (optional)',
+                    hintText: 'e.g. Seminar Hall, CS Block',
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
+              label: const Text('Generate PDF'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (go == true) {
+      final bytes = await buildFypPanelInvitePdf(
+        panel: panel,
+        groups: groups,
+        date: date,
+        startMinuteOfDay: time.hour * 60 + time.minute,
+        minutesPerGroup: int.tryParse(perGroup.text.trim()) ?? 20,
+        venue: venue.text.trim(),
+      );
+      final safeName = panel.name.trim().isEmpty
+          ? 'panel'
+          : panel.name.trim().replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: 'FYP_Examiner_Invite_$safeName.pdf',
+      );
+    }
+    venue.dispose();
+    perGroup.dispose();
   }
 
   Future<void> _panelDialog(BuildContext context, FypPanel? existing) async {
@@ -1975,11 +2591,8 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
           if (isPending)
             FilledButton.icon(
               style: FilledButton.styleFrom(backgroundColor: _green),
-              onPressed: () => _repo.coordinatorDecision(
-                groupId: g.id,
-                approve: true,
-                byName: _actorName,
-              ),
+              onPressed: () =>
+                  _coordinatorDecision(groupId: g.id, approve: true),
               icon: const Icon(Icons.check_rounded, size: 18),
               label: const Text('Allot'),
             ),
@@ -2021,6 +2634,20 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     );
   }
 
+  void _coordinatorDecision({
+    required String groupId,
+    required bool approve,
+    String reason = '',
+  }) {
+    _repo.coordinatorDecision(
+      groupId: groupId,
+      approve: approve,
+      byName: _actorName,
+      reason: reason,
+    );
+    unawaited(CloudSyncService.instance.pushModules());
+  }
+
   Future<void> _rejectDialog(BuildContext context, FypGroup g) async {
     final ctrl = TextEditingController();
     final go = await showDialog<bool>(
@@ -2048,12 +2675,7 @@ class _FypAdminGroupsPageState extends State<FypAdminGroupsPage>
     final reason = ctrl.text.trim();
     ctrl.dispose();
     if (go == true) {
-      _repo.coordinatorDecision(
-        groupId: g.id,
-        approve: false,
-        byName: _actorName,
-        reason: reason,
-      );
+      _coordinatorDecision(groupId: g.id, approve: false, reason: reason);
     }
   }
 
@@ -2308,6 +2930,381 @@ List<StudentRecord> fypEligibleStudents() {
   return out;
 }
 
+/// Maps a student's semester to the FYP phase they should appear under:
+/// 7th semester → FYP-II, 8th (or higher) → FYP-III, anything else → FYP-I.
+FypPhase fypPhaseForSemester(String semester) {
+  final s = int.tryParse(semester.trim()) ?? 0;
+  if (s >= 8) return FypPhase.fyp3;
+  if (s == 7) return FypPhase.fyp2;
+  return FypPhase.fyp1;
+}
+
+/// Ungrouped final-year students that belong to [phase] by their semester,
+/// i.e. eligible students not already in a group, mapped 7→II / 8→III.
+List<StudentRecord> fypUngroupedForPhase(FypPhase phase) {
+  final grouped = FypRepository.instance.groupedRolls();
+  return fypEligibleStudents()
+      .where((s) => !grouped.contains(s.rollNo.trim().toLowerCase()))
+      .where((s) => fypPhaseForSemester(s.semester) == phase)
+      .toList();
+}
+
+// ============================================================================
+// FYP SEARCH — look up a student (which group? who is the supervisor?) or a
+// teacher/supervisor (which groups + which students are under them?).
+// ============================================================================
+class FypSearchPage extends StatefulWidget {
+  const FypSearchPage({super.key});
+
+  @override
+  State<FypSearchPage> createState() => _FypSearchPageState();
+}
+
+class _FypSearchPageState extends State<FypSearchPage> {
+  final _search = TextEditingController();
+  String _query = '';
+
+  FypRepository get _repo => FypRepository.instance;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  List<String> _allTeacherNames() {
+    final names = <String>{
+      for (final t in registration.registrationTeachers) t.name,
+      for (final c in LoginStore.instance.customTeachers()) c.name,
+      for (final g in _repo.groups) ...[
+        g.supervisorName,
+        g.coSupervisorName,
+        ...g.examiners,
+      ],
+    }..removeWhere((e) => e.trim().isEmpty);
+    final list = names.toList()..sort();
+    return list;
+  }
+
+  bool _sameName(String a, String b) =>
+      a.trim().toLowerCase() == b.trim().toLowerCase();
+
+  void _openGroup(FypGroup g) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: SingleChildScrollView(
+          child: _GroupCard(
+            group: g,
+            serial: _repo.serialOf(g),
+            showTimeline: true,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: PortalColors.pageBackground,
+      appBar: AppBar(title: const Text('FYP Search')),
+      body: AnimatedBuilder(
+        animation: _repo,
+        builder: (context, _) {
+          final q = _query.trim().toLowerCase();
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              TextField(
+                controller: _search,
+                autofocus: true,
+                onChanged: (v) => setState(() => _query = v),
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  hintText: 'Roll no, student name, or teacher name',
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear_rounded),
+                          onPressed: () {
+                            _search.clear();
+                            setState(() => _query = '');
+                          },
+                        ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              if (q.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(18),
+                  child: Text(
+                    'Type a student roll number or name to see their group '
+                    'and supervisor — or a teacher name to see all the '
+                    'groups and students under them.',
+                    style: TextStyle(color: PortalColors.subtleText),
+                  ),
+                )
+              else ...[
+                ..._studentResults(q),
+                ..._teacherResults(q),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------- students
+  List<Widget> _studentResults(String q) {
+    // Every known student: group members first (name as saved in the group),
+    // then the eligible final-year students who have no group yet.
+    final seen = <String>{};
+    final matches =
+        <({String roll, String name, String info, FypGroup? group})>[];
+
+    for (final g in _repo.groups) {
+      for (final m in g.members) {
+        final roll = m.rollNo.trim();
+        final key = roll.toLowerCase();
+        if (key.isEmpty || seen.contains(key)) continue;
+        if (!key.contains(q) && !m.name.toLowerCase().contains(q)) continue;
+        seen.add(key);
+        matches.add((
+          roll: roll,
+          name: m.name,
+          info: '',
+          group: _repo.groupForRollNo(roll),
+        ));
+      }
+    }
+    for (final s in fypEligibleStudents()) {
+      final key = s.rollNo.trim().toLowerCase();
+      if (key.isEmpty || seen.contains(key)) continue;
+      if (!key.contains(q) && !s.studentName.toLowerCase().contains(q)) {
+        continue;
+      }
+      seen.add(key);
+      matches.add((
+        roll: s.rollNo,
+        name: s.studentName,
+        info:
+            '${s.program} · Sem ${s.semester}'
+            '${s.section.isEmpty ? '' : ' · ${s.section}'}',
+        group: _repo.groupForRollNo(s.rollNo),
+      ));
+    }
+    if (matches.isEmpty) return const [];
+    matches.sort((a, b) => a.roll.compareTo(b.roll));
+
+    return [
+      fypSectionTitle('Students (${matches.length})'),
+      for (final m in matches.take(30)) _studentCard(m),
+      if (matches.length > 30)
+        const Padding(
+          padding: EdgeInsets.only(bottom: 10),
+          child: Text(
+            'Showing the first 30 — type more to narrow the search.',
+            style: TextStyle(color: PortalColors.subtleText, fontSize: 12),
+          ),
+        ),
+      const SizedBox(height: 8),
+    ];
+  }
+
+  Widget _studentCard(
+    ({String roll, String name, String info, FypGroup? group}) m,
+  ) {
+    final g = m.group;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: PortalColors.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.person_rounded, size: 18, color: _amber),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${m.roll}  ${m.name}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (m.info.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 26, top: 2),
+              child: Text(
+                m.info,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  color: PortalColors.subtleText,
+                ),
+              ),
+            ),
+          const SizedBox(height: 8),
+          if (g == null)
+            const Text(
+              'No FYP group yet.',
+              style: TextStyle(
+                color: _red,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+              ),
+            )
+          else ...[
+            InkWell(
+              onTap: () => _openGroup(g),
+              child: Text(
+                'Group #${_repo.serialOf(g)} · ${g.title.isEmpty ? '(no title)' : g.title} · '
+                '${g.phase.label} · ${g.status.label}',
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Supervisor: ${g.supervisorName.isEmpty ? '—' : g.supervisorName}'
+              '${g.coSupervisorName.isEmpty ? '' : '\nCo-supervisor: ${g.coSupervisorName}'}'
+              '${g.examiners.isEmpty ? '' : '\nExaminers: ${g.examiners.join(', ')}'}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------- teachers
+  List<Widget> _teacherResults(String q) {
+    final matches = _allTeacherNames()
+        .where((n) => n.toLowerCase().contains(q))
+        .take(20)
+        .toList();
+    if (matches.isEmpty) return const [];
+    return [
+      fypSectionTitle('Teachers / supervisors (${matches.length})'),
+      for (final name in matches) _teacherCard(name),
+    ];
+  }
+
+  Widget _teacherCard(String name) {
+    final supervising = <FypGroup>[];
+    final coSupervising = <FypGroup>[];
+    final examining = <FypGroup>[];
+    for (final g in _repo.groups) {
+      if (g.status == FypGroupStatus.rejected) continue;
+      if (_sameName(g.supervisorName, name)) supervising.add(g);
+      if (_sameName(g.coSupervisorName, name)) coSupervising.add(g);
+      if (g.examiners.any((e) => _sameName(e, name))) examining.add(g);
+    }
+    // Distinct students across ALL roles — examiner-only groups count too.
+    final studentCount = {
+      for (final g in [...supervising, ...coSupervising, ...examining])
+        for (final m in g.members) m.rollNo.trim().toLowerCase(),
+    }..removeWhere((e) => e.isEmpty);
+
+    Widget groupLine(FypGroup g, String role) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: InkWell(
+          onTap: () => _openGroup(g),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$role — #${_repo.serialOf(g)} '
+                '${g.title.isEmpty ? '(no title)' : g.title} · '
+                '${g.phase.label} · ${g.status.label}',
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              for (final m in g.members)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    '•  ${m.rollNo}  ${m.name}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: PortalColors.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.co_present_rounded, size: 18, color: _amber),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  name,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            supervising.isEmpty && coSupervising.isEmpty && examining.isEmpty
+                ? 'No FYP groups under this teacher.'
+                : 'Supervising ${supervising.length} group(s)'
+                      '${coSupervising.isEmpty ? '' : ' · Co-supervising ${coSupervising.length}'}'
+                      '${examining.isEmpty ? '' : ' · Examining ${examining.length}'}'
+                      ' · ${studentCount.length} student(s)',
+            style: const TextStyle(
+              fontSize: 12,
+              color: PortalColors.subtleText,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          for (final g in supervising) groupLine(g, 'Supervisor'),
+          for (final g in coSupervising) groupLine(g, 'Co-supervisor'),
+          for (final g in examining) groupLine(g, 'Examiner'),
+        ],
+      ),
+    );
+  }
+}
+
 // ============================================================================
 // Meeting notice — shown to students and teachers so a coordinator-scheduled
 // meeting reaches both sides. Teachers additionally see the form requirement.
@@ -2319,6 +3316,89 @@ Widget fypSectionTitle(String t) => Padding(
     style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
   ),
 );
+
+/// Live viva-flow banner for a student group: current turn, next turn, this
+/// group's queue position and estimated time. Updates in real time as the
+/// examiner advances the queue (marks entry auto-advances it).
+Widget fypVivaNotice(FypVivaSession s, FypGroup mine, FypRepository repo) {
+  FypGroup? byId(String id) {
+    for (final g in repo.groups) {
+      if (g.id == id) return g;
+    }
+    return null;
+  }
+
+  String titleOf(String? id) {
+    if (id == null) return '—';
+    final g = byId(id);
+    if (g == null) return id;
+    return g.title.isEmpty ? '(no title)' : g.title;
+  }
+
+  final myIndex = s.groupIds.indexOf(mine.id);
+  final isMyTurn = s.currentGroupId == mine.id;
+  final amDone = myIndex >= 0 && myIndex < s.currentIndex;
+  final color = isMyTurn ? const Color(0xFF047857) : const Color(0xFF1D4ED8);
+  final est = myIndex >= 0 ? s.estimatedStartOf(myIndex) : null;
+
+  return Container(
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.08),
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: color.withValues(alpha: 0.5)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.record_voice_over_rounded, size: 18, color: color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                isMyTurn
+                    ? 'YOUR TURN NOW — ${s.title}'
+                    : amDone
+                    ? 'Viva done — ${s.title}'
+                    : 'Viva running — ${s.title}',
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 14,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Now: ${titleOf(s.currentGroupId)}'
+          '${s.nextGroupId == null ? '' : '\nNext: ${titleOf(s.nextGroupId)}'}',
+          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
+        ),
+        if (!isMyTurn && !amDone && myIndex >= 0) ...[
+          const SizedBox(height: 4),
+          Text(
+            'Your position: ${myIndex + 1} of ${s.groupIds.length}'
+            '${est == null ? '' : ' · expected ~${DateFormat('hh:mm a').format(est)}'}'
+            ' · ${s.minutesPerGroup} min per group',
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
+        const SizedBox(height: 4),
+        Text(
+          'Examiner: ${s.examinerName}',
+          style: const TextStyle(
+            fontSize: 11.5,
+            color: PortalColors.subtleText,
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
 Widget fypMeetingNotice(FypMeeting m, {required bool forTeacher}) {
   return Container(
