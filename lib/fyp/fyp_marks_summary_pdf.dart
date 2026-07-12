@@ -64,7 +64,7 @@ Future<Uint8List> buildFypMarksSummaryPdf({
     content.addAll([
       pw.SizedBox(height: 8),
       fypSectionTitle(
-        '${phase.label} — ${phaseGroups.length} group(s), '
+        '${phase.marksLabel} — ${phaseGroups.length} group(s), '
         '$marked marked / ${phaseGroups.length - marked} pending',
         assets.boldFont,
       ),

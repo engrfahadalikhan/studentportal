@@ -165,6 +165,7 @@ class FypRepository extends ChangeNotifier {
       }
       _migrateLegacyArtifactIds();
       _purgeKnownBadGroups();
+      _purgeDuplicateMemberGroups();
       notifyListeners();
     } catch (e) {
       // A corrupt store must never block startup.
@@ -186,6 +187,46 @@ class FypRepository extends ChangeNotifier {
       _deletedGroups.putIfAbsent(id, () => DateTime.now().toIso8601String());
     }
     _groups.removeWhere((g) => _knownBadGroupIds.contains(g.id));
+  }
+
+  String _memberSetKey(FypGroup group) {
+    final rolls = [
+      for (final member in group.members)
+        if (member.rollNo.trim().isNotEmpty) member.rollNo.trim().toLowerCase(),
+    ]..sort();
+    return rolls.join('|');
+  }
+
+  bool _purgeDuplicateMemberGroups() {
+    final newestByMembers = <String, FypGroup>{};
+    final duplicateIds = <String>{};
+    for (final group in _groups) {
+      if (group.status == FypGroupStatus.rejected) continue;
+      final key = _memberSetKey(group);
+      if (key.isEmpty) continue;
+      final existing = newestByMembers[key];
+      if (existing == null) {
+        newestByMembers[key] = group;
+        continue;
+      }
+      final groupWins =
+          group.updatedAt.isAfter(existing.updatedAt) ||
+          (group.updatedAt.isAtSameMomentAs(existing.updatedAt) &&
+              group.createdAt.isAfter(existing.createdAt));
+      if (groupWins) {
+        duplicateIds.add(existing.id);
+        newestByMembers[key] = group;
+      } else {
+        duplicateIds.add(group.id);
+      }
+    }
+    if (duplicateIds.isEmpty) return false;
+    final now = DateTime.now().toIso8601String();
+    for (final id in duplicateIds) {
+      _deletedGroups.putIfAbsent(id, () => now);
+    }
+    _groups.removeWhere((group) => duplicateIds.contains(group.id));
+    return true;
   }
 
   /// One-time repair: legacy ids (PREFIX-2026-001, year+count) collide across
@@ -327,6 +368,7 @@ class FypRepository extends ChangeNotifier {
       case 'srs':
         merge(_srsDocuments, srsFromMap, srsToMap, (e) => e.id);
     }
+    if (_purgeDuplicateMemberGroups()) changed = true;
     if (changed) notifyListeners();
   }
 
@@ -1249,7 +1291,10 @@ class FypRepository extends ChangeNotifier {
     take(meetings, _deletedMeetings);
     take(viva, _deletedViva);
     final beforeCounts =
-        _groups.length + _panels.length + _meetings.length + _vivaSessions.length;
+        _groups.length +
+        _panels.length +
+        _meetings.length +
+        _vivaSessions.length;
     _groups.removeWhere(
       (g) => _tombstoneWins(_deletedGroups[g.id], g.updatedAt),
     );
@@ -1420,9 +1465,38 @@ class FypRepository extends ChangeNotifier {
 
   /// Assigns a whole panel's teachers as the group's examiners in one tap.
   void assignPanelToGroup({required String groupId, required String panelId}) {
+    assignPanelToGroups(groupIds: [groupId], panelId: panelId);
+  }
+
+  /// Assigns a whole panel to multiple groups in one save.
+  void assignPanelToGroups({
+    required Iterable<String> groupIds,
+    required String panelId,
+  }) {
     final panel = _panels.where((p) => p.id == panelId).firstOrNull;
     if (panel == null) return;
-    setGroupExaminers(groupId: groupId, examiners: panel.members);
+    final ids = groupIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (ids.isEmpty) return;
+    final examiners = [
+      for (final member in panel.members)
+        if (member.trim().isNotEmpty) member.trim(),
+    ];
+    var changed = false;
+    final now = DateTime.now();
+    for (var i = 0; i < _groups.length; i++) {
+      if (!ids.contains(_groups[i].id)) continue;
+      if (_sameCoordinatorList(_groups[i].examiners, examiners)) continue;
+      _groups[i] = _dedupGroup(
+        _groups[i].copyWith(examiners: examiners, updatedAt: now),
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    notifyListeners();
+    onGroupsChanged?.call();
   }
 
   /// Groups whose examiner set matches this panel's members — i.e. the groups
@@ -1442,7 +1516,9 @@ class FypRepository extends ChangeNotifier {
     }).toList();
     out.sort((a, b) {
       final p = a.phase.index.compareTo(b.phase.index);
-      return p != 0 ? p : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      return p != 0
+          ? p
+          : a.title.toLowerCase().compareTo(b.title.toLowerCase());
     });
     return out;
   }
@@ -1595,6 +1671,31 @@ class FypRepository extends ChangeNotifier {
     _vivaTouched();
   }
 
+  void updateVivaTiming({
+    required String sessionId,
+    int? minutesPerGroup,
+    DateTime? startedAt,
+    String? title,
+  }) {
+    _updateViva(
+      sessionId,
+      (v) => v.copyWith(
+        title: title,
+        minutesPerGroup: minutesPerGroup == null
+            ? null
+            : (minutesPerGroup < 1 ? 1 : minutesPerGroup),
+        startedAt: startedAt,
+      ),
+    );
+  }
+
+  void shiftVivaStart(String sessionId, Duration delta) {
+    _updateViva(
+      sessionId,
+      (v) => v.copyWith(startedAt: v.startedAt.add(delta)),
+    );
+  }
+
   /// Moves the queue to the next group; finishes the session after the last.
   void advanceViva(String sessionId) {
     _updateViva(sessionId, (v) {
@@ -1633,6 +1734,28 @@ class FypRepository extends ChangeNotifier {
       if (from <= v.currentIndex) return v;
       final id = ids.removeAt(from);
       ids.insert(v.currentIndex + 1, id);
+      return v.copyWith(groupIds: List.unmodifiable(ids));
+    });
+  }
+
+  void moveVivaGroupEarlier(String sessionId, String groupId) {
+    _updateViva(sessionId, (v) {
+      final ids = List<String>.of(v.groupIds);
+      final from = ids.indexOf(groupId);
+      if (from <= v.currentIndex + 1) return v;
+      final id = ids.removeAt(from);
+      ids.insert(from - 1, id);
+      return v.copyWith(groupIds: List.unmodifiable(ids));
+    });
+  }
+
+  void moveVivaGroupLater(String sessionId, String groupId) {
+    _updateViva(sessionId, (v) {
+      final ids = List<String>.of(v.groupIds);
+      final from = ids.indexOf(groupId);
+      if (from <= v.currentIndex || from >= ids.length - 1) return v;
+      final id = ids.removeAt(from);
+      ids.insert(from + 1, id);
       return v.copyWith(groupIds: List.unmodifiable(ids));
     });
   }

@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-const int kAustPortalBuildNumber = 110;
-const String kAustPortalVersionName = '2.13.2';
+const int kAustPortalBuildNumber = 117;
+const String kAustPortalVersionName = '2.13.9';
 const String kAustPortalVersionLabel = 'v$kAustPortalVersionName';
 
 const String kFirestoreNamespaceCollection = 'aust_portal_v2';

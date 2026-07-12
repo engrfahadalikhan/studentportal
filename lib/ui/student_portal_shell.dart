@@ -4,6 +4,7 @@ import '../assessment/student_assessment_flow.dart';
 import '../features/change_password_page.dart';
 import '../features/feature_catalog.dart';
 import '../features/feature_visibility_service.dart';
+import '../assessment/menu_switcher.dart';
 import '../assessment/menu_wheel.dart';
 import '../fyp/fyp_models.dart';
 import '../fyp/fyp_repository.dart';
@@ -35,6 +36,24 @@ class PortalColors {
       ThemeController.instance.palette.heroGradient;
   static LinearGradient get brandGradient =>
       ThemeController.instance.palette.brandGradient;
+  static Color get heroAccentText => Color.lerp(
+    ThemeController.instance.palette.secondary,
+    Colors.white,
+    0.12,
+  )!;
+
+  static LinearGradient themedAccentGradient(Color seed) {
+    final palette = ThemeController.instance.palette;
+    final lightSeed = Color.lerp(seed, Colors.white, 0.36)!;
+    return LinearGradient(
+      colors: [
+        Color.lerp(palette.heroFrom, seed, 0.24)!,
+        Color.lerp(palette.heroTo, lightSeed, 0.55)!,
+      ],
+      begin: Alignment.centerLeft,
+      end: Alignment.centerRight,
+    );
+  }
 
   // ---- Neutrals (palette-independent, keep the app readable) ----
   static const Color pageBackground = Color(0xFFF8FAFC); // slate-50
@@ -1614,7 +1633,7 @@ class _StudentMenuWheel extends StatelessWidget {
           ),
         ];
         if (items.isEmpty) return const SizedBox.shrink();
-        return SizedBox(height: 470, child: MenuWheel(items: items));
+        return SizedBox(height: 470, child: MenuSwitcher(items: items));
       },
     );
   }

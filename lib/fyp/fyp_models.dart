@@ -26,6 +26,19 @@ extension FypPhaseX on FypPhase {
         return 'Final Year Project III';
     }
   }
+
+  String get semesterLabel {
+    switch (this) {
+      case FypPhase.fyp1:
+        return 'Semester 6';
+      case FypPhase.fyp2:
+        return 'Semester 7';
+      case FypPhase.fyp3:
+        return 'Semester 8';
+    }
+  }
+
+  String get marksLabel => '$label ($semesterLabel)';
 }
 
 enum FypProgram { bscs, bsse }
@@ -354,7 +367,7 @@ extension FypPresentationDecisionX on FypPresentationDecision {
   }
 }
 
-/// Each rubric dimension is scored 1–5.
+/// Each rubric dimension is scored from 1 up to its own maxMarks value.
 class FypRubricRow {
   const FypRubricRow({
     required this.label,
@@ -364,7 +377,7 @@ class FypRubricRow {
 
   final String label;
   final int maxMarks;
-  final int score; // 1..5 inclusive once filled
+  final int score; // 0 while empty, otherwise 0..maxMarks
 
   FypRubricRow copyWith({int? score}) {
     return FypRubricRow(

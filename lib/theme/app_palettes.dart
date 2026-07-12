@@ -33,17 +33,17 @@ class AppPalette {
 
   /// Deep, calm gradient for hero cards / dashboard banners.
   LinearGradient get heroGradient => LinearGradient(
-        colors: [heroFrom, heroTo],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-      );
+    colors: [heroFrom, heroTo],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
 
   /// Lively primary→accent gradient for small brand flourishes (logo, avatar).
   LinearGradient get brandGradient => LinearGradient(
-        colors: [primary, secondary],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-      );
+    colors: [primary, secondary],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
 }
 
 /// The curated set of themes shown in the appearance picker.
@@ -61,6 +61,36 @@ const List<AppPalette> kAppPalettes = [
     border: Color(0xFFEADBB0),
     heroFrom: Color(0xFF1B1813),
     heroTo: Color(0xFF6E5713),
+  ),
+  AppPalette(
+    id: 'fyp_copper',
+    label: 'FYP Copper',
+    primary: Color(0xFFC35A06),
+    secondary: Color(0xFFD4915F),
+    soft: Color(0xFFFFF3E8),
+    border: Color(0xFFFED7AA),
+    heroFrom: Color(0xFFB84E00),
+    heroTo: Color(0xFFD49462),
+  ),
+  AppPalette(
+    id: 'fyp_gold',
+    label: 'FYP Gold',
+    primary: Color(0xFF8A6E16),
+    secondary: Color(0xFFE7C955),
+    soft: Color(0xFFFAF4E2),
+    border: Color(0xFFEADBB0),
+    heroFrom: Color(0xFF15140F),
+    heroTo: Color(0xFF7E6908),
+  ),
+  AppPalette(
+    id: 'fyp_teal',
+    label: 'FYP Teal',
+    primary: Color(0xFF078C66),
+    secondary: Color(0xFF67B8A0),
+    soft: Color(0xFFECFDF5),
+    border: Color(0xFFC7F3E5),
+    heroFrom: Color(0xFF078761),
+    heroTo: Color(0xFF62B49C),
   ),
   AppPalette(
     id: 'indigo',
@@ -126,6 +156,6 @@ const List<AppPalette> kAppPalettes = [
 
 /// Look up a palette by id, falling back to the first (Gold) when unknown.
 AppPalette paletteById(String? id) => kAppPalettes.firstWhere(
-      (palette) => palette.id == id,
-      orElse: () => kAppPalettes.first,
-    );
+  (palette) => palette.id == id,
+  orElse: () => kAppPalettes.first,
+);

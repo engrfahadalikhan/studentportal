@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'assessment/menu_switcher.dart';
 import 'connect/connect_repository.dart';
 import 'connect/event_repository.dart';
 import 'firebase_options.dart';
@@ -54,6 +55,7 @@ Future<void> main() async {
     DeviceBindingService.instance.load(),
     LoginStore.instance.load(),
     ThemeController.instance.load(),
+    MenuStyleController.instance.load(),
   ]);
   runApp(const StudentPortalApp());
 }

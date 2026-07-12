@@ -38,7 +38,9 @@ class FypPanel {
   static FypPanel fromJson(Map<dynamic, dynamic> m) => FypPanel(
     id: (m['id'] ?? '').toString(),
     name: (m['name'] ?? '').toString(),
-    members: [for (final e in (m['members'] as List? ?? const [])) e.toString()],
+    members: [
+      for (final e in (m['members'] as List? ?? const [])) e.toString(),
+    ],
     createdAt:
         DateTime.tryParse((m['createdAt'] ?? '').toString()) ?? DateTime.now(),
     updatedAt:
@@ -158,19 +160,21 @@ class FypVivaSession {
       startedAt.add(Duration(minutes: minutesPerGroup * index));
 
   FypVivaSession copyWith({
+    String? title,
     int? minutesPerGroup,
     List<String>? groupIds,
     int? currentIndex,
     String? status,
+    DateTime? startedAt,
   }) => FypVivaSession(
     id: id,
     examinerName: examinerName,
-    title: title,
+    title: title ?? this.title,
     minutesPerGroup: minutesPerGroup ?? this.minutesPerGroup,
     groupIds: groupIds ?? this.groupIds,
     currentIndex: currentIndex ?? this.currentIndex,
     status: status ?? this.status,
-    startedAt: startedAt,
+    startedAt: startedAt ?? this.startedAt,
     createdAt: createdAt,
     updatedAt: DateTime.now(),
   );
@@ -218,7 +222,12 @@ class FypVivaSession {
 // examiner teachers to approved groups.
 // ============================================================================
 
-enum FypGroupStatus { pendingSupervisor, pendingCoordinator, approved, rejected }
+enum FypGroupStatus {
+  pendingSupervisor,
+  pendingCoordinator,
+  approved,
+  rejected,
+}
 
 extension FypGroupStatusX on FypGroupStatus {
   String get label {

@@ -26,7 +26,7 @@ import 'fyp_srs_pdf.dart';
 /// 3. Allocation      (form #3)   — student fills, faculty signs in teacher app
 /// 4. Proposal        (form #5)   — proposal cover sheet metadata + QR
 /// 5. Meeting Log     (form #14)  — students fill Section 1, supervisor fills 2
-/// 6. Evaluations     (forms #8 + #11) — read-only marks once examiners enter
+/// 6. Evaluations     (forms #8 + #11) — student-safe status note only
 class FypSection extends StatefulWidget {
   const FypSection({
     super.key,
@@ -61,7 +61,10 @@ class _FypSectionState extends State<FypSection>
   }
 
   Future<void> _refreshFyp({bool force = true}) {
-    return CloudSyncService.instance.pullFypWorkspace(force: force);
+    return CloudSyncService.instance.pullFypWorkspace(
+      force: force,
+      includeEvaluations: false,
+    );
   }
 
   @override
@@ -96,9 +99,6 @@ class _FypSectionState extends State<FypSection>
                   controller: _tabController,
                   isScrollable: true,
                   tabAlignment: TabAlignment.start,
-                  labelColor: PortalColors.brandBlue,
-                  unselectedLabelColor: PortalColors.subtleText,
-                  indicatorColor: PortalColors.brandBlue,
                   tabs: const [
                     Tab(text: 'My Group'),
                     Tab(text: 'Group Form'),
@@ -144,10 +144,7 @@ class _FypSectionState extends State<FypSection>
                     fypRepository: _fypRepository,
                     studentChoices: studentChoices,
                   ),
-                  _EvaluationsTab(
-                    student: widget.student,
-                    fypRepository: _fypRepository,
-                  ),
+                  const _EvaluationsTab(),
                 ],
               ),
             );
@@ -974,17 +971,13 @@ class _MeetingCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Tab 6 — Evaluations (read-only marks set by examiners)
+// Tab 6 — Evaluations (marks are intentionally hidden from students)
 // ============================================================================
 class _EvaluationsTab extends StatelessWidget {
-  const _EvaluationsTab({required this.student, required this.fypRepository});
-
-  final StudentRecord student;
-  final FypRepository fypRepository;
+  const _EvaluationsTab();
 
   @override
   Widget build(BuildContext context) {
-    final mine = fypRepository.evaluationsForRollNo(student.rollNo);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
@@ -993,84 +986,14 @@ class _EvaluationsTab extends StatelessWidget {
           color: const Color(0xFFB91C1C),
           title: 'Evaluations',
           message:
-              'Marks entered by your evaluation panel appear here once they finish. Both Proposal and SRS evaluations are listed.',
+              'Evaluation records are kept with the FYP coordinator, supervisor, and examiners. Marks are not shown in the student portal.',
         ),
         const SizedBox(height: 14),
-        if (mine.isEmpty)
-          const _EmptyHint(text: 'No evaluations have been recorded yet.')
-        else
-          for (final evaluation in mine)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _EvaluationCard(evaluation: evaluation),
-            ),
+        const _EmptyHint(
+          text:
+              'Your official result will be handled by the department. Contact your supervisor or FYP coordinator when results are announced.',
+        ),
       ],
-    );
-  }
-}
-
-class _EvaluationCard extends StatelessWidget {
-  const _EvaluationCard({required this.evaluation});
-
-  final FypEvaluation evaluation;
-
-  @override
-  Widget build(BuildContext context) {
-    return _RecordCard(
-      borderColor: const Color(0xFFFCA5A5),
-      header: Row(
-        children: [
-          _Pill(
-            label: evaluation.kind.label.toUpperCase(),
-            bg: const Color(0xFFFEE2E2),
-            fg: const Color(0xFFB91C1C),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              evaluation.projectTitle,
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-          ),
-          _StatusChip(
-            label: '${evaluation.marksObtained}/${evaluation.marksMax}',
-          ),
-        ],
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Examiner: ${evaluation.examinerName}',
-            style: const TextStyle(fontSize: 12.5),
-          ),
-          Text(
-            'Supervised by: ${evaluation.supervisorName}',
-            style: const TextStyle(fontSize: 12.5),
-          ),
-          Text(
-            'Presentation: ${evaluation.presentationDecision.label}',
-            style: const TextStyle(fontSize: 12.5),
-          ),
-          if (evaluation.remarks.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Examiner remarks: ${evaluation.remarks}',
-              style: const TextStyle(fontSize: 12.5, height: 1.35),
-            ),
-          ],
-          const SizedBox(height: 6),
-          for (final row in evaluation.rubric)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                '${row.label}  —  ${row.score}/${row.maxMarks}',
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-        ],
-      ),
-      actions: const [],
     );
   }
 }
@@ -1096,9 +1019,7 @@ class _IntroCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [color, color.withValues(alpha: 0.65)],
-        ),
+        gradient: PortalColors.themedAccentGradient(color),
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(

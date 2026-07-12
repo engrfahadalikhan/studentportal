@@ -92,9 +92,6 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
               controller: _tabController,
               isScrollable: true,
               tabAlignment: TabAlignment.start,
-              labelColor: PortalColors.brandBlue,
-              unselectedLabelColor: PortalColors.subtleText,
-              indicatorColor: PortalColors.brandBlue,
               tabs: const [
                 Tab(text: 'Groups'),
                 Tab(text: 'My FYP Students'),
@@ -428,6 +425,7 @@ class _ExaminationGroupCard extends StatelessWidget {
         )
         .toList(growable: false);
     final evaluated = mine.isNotEmpty;
+    final serial = repo.serialOf(group);
     return _RecordCard(
       borderColor: isCurrentViva
           ? const Color(0xFF6EE7B7)
@@ -439,6 +437,10 @@ class _ExaminationGroupCard extends StatelessWidget {
             bg: const Color(0xFFFEF3C7),
             fg: const Color(0xFFB45309),
           ),
+          if (serial > 0) ...[
+            const SizedBox(width: 8),
+            _SerialBadge(serial: serial),
+          ],
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -1228,6 +1230,7 @@ class _ExaminerGroupEvaluationCard extends StatelessWidget {
               teacher.name.trim().toLowerCase(),
         )
         .toList(growable: false);
+    final serial = repo.serialOf(group);
     return _RecordCard(
       borderColor: const Color(0xFFFCA5A5),
       header: Row(
@@ -1237,6 +1240,10 @@ class _ExaminerGroupEvaluationCard extends StatelessWidget {
             bg: const Color(0xFFFEE2E2),
             fg: const Color(0xFFB91C1C),
           ),
+          if (serial > 0) ...[
+            const SizedBox(width: 8),
+            _SerialBadge(serial: serial),
+          ],
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -1388,6 +1395,7 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
   final _title = TextEditingController();
   final _supervisor = TextEditingController();
   final _remarks = TextEditingController();
+  final _directMarks = TextEditingController();
   late final List<TextEditingController> _memberRolls;
   late final List<TextEditingController> _memberNames;
   late final TextEditingController _term;
@@ -1396,6 +1404,7 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
   FypPresentationDecision _presentationDecision =
       FypPresentationDecision.completed;
   late List<FypRubricRow> _rubric;
+  bool _useDirectMarks = false;
 
   @override
   void initState() {
@@ -1415,6 +1424,7 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
     _title.dispose();
     _supervisor.dispose();
     _remarks.dispose();
+    _directMarks.dispose();
     for (final controller in _memberRolls) {
       controller.dispose();
     }
@@ -1441,6 +1451,8 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
 
   void _applyGroup(FypGroup group) {
     _selectedGroupId = group.id;
+    _useDirectMarks = group.phase == FypPhase.fyp2;
+    _directMarks.clear();
     _title.text = group.title;
     _supervisor.text = group.supervisorName;
     _term.text = group.term.isEmpty ? _defaultTerm() : group.term;
@@ -1465,6 +1477,15 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
       );
       return;
     }
+    final rubric = _useDirectMarks
+        ? [
+            FypRubricRow(
+              label: '${widget.kind.label} marks',
+              maxMarks: 100,
+              score: int.parse(_directMarks.text.trim()),
+            ),
+          ]
+        : _rubric;
     widget.repo.createEvaluation(
       kind: widget.kind,
       groupId: group.id,
@@ -1473,7 +1494,7 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
       supervisorName: _supervisor.text.trim(),
       examinerName: widget.teacher.name,
       members: group.members,
-      rubric: _rubric,
+      rubric: rubric,
       remarks: _remarks.text,
       presentationDecision: _presentationDecision,
     );
@@ -1606,22 +1627,69 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
             ),
             const SizedBox(height: 12),
             _FormCard(
-              title: 'Rubric scores (1–5)',
+              title: 'Marks entry',
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var i = 0; i < _rubric.length; i++)
-                    _RubricRowEditor(
-                      row: _rubric[i],
-                      onScoreChanged: (score) {
-                        setState(() {
-                          _rubric = [..._rubric];
-                          _rubric[i] = _rubric[i].copyWith(score: score);
-                        });
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(
+                        value: true,
+                        icon: Icon(Icons.pin_outlined),
+                        label: Text('Direct /100'),
+                      ),
+                      ButtonSegment(
+                        value: false,
+                        icon: Icon(Icons.fact_check_outlined),
+                        label: Text('Detailed rubric'),
+                      ),
+                    ],
+                    selected: {_useDirectMarks},
+                    onSelectionChanged: (value) =>
+                        setState(() => _useDirectMarks = value.first),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_useDirectMarks) ...[
+                    TextFormField(
+                      controller: _directMarks,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: '${widget.kind.label} marks (out of 100)',
+                        prefixIcon: const Icon(Icons.scoreboard_outlined),
+                        helperText:
+                            'Use this when the examiner wants one total mark instead of rubric rows.',
+                      ),
+                      validator: (value) {
+                        final marks = int.tryParse((value ?? '').trim());
+                        if (marks == null) return 'Enter marks from 0 to 100.';
+                        if (marks < 0 || marks > 100) {
+                          return 'Marks must be between 0 and 100.';
+                        }
+                        return null;
                       },
                     ),
+                  ] else ...[
+                    for (var i = 0; i < _rubric.length; i++)
+                      _RubricRowEditor(
+                        row: _rubric[i],
+                        onScoreChanged: (score) {
+                          setState(() {
+                            _rubric = [..._rubric];
+                            _rubric[i] = _rubric[i].copyWith(score: score);
+                          });
+                        },
+                      ),
+                  ],
                 ],
               ),
             ),
+            if (selectedGroup?.phase == FypPhase.fyp2) ...[
+              const SizedBox(height: 8),
+              const _InfoHint(
+                text:
+                    'FYP-II groups open in Direct /100 mode by default. Switch to Detailed rubric if the panel needs row-wise marking.',
+              ),
+            ],
             const SizedBox(height: 12),
             _FormCard(
               title: 'Examiner decision',
@@ -1697,16 +1765,20 @@ class _RubricRowEditor extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
           ),
           const SizedBox(height: 4),
-          Wrap(
-            spacing: 6,
-            children: [
-              for (var i = 1; i <= 5; i++)
-                ChoiceChip(
-                  label: Text('$i'),
-                  selected: row.score == i,
-                  onSelected: (_) => onScoreChanged(i),
-                ),
-            ],
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (var i = 1; i <= row.maxMarks; i++) ...[
+                  ChoiceChip(
+                    label: Text('$i'),
+                    selected: row.score == i,
+                    onSelected: (_) => onScoreChanged(i),
+                  ),
+                  if (i != row.maxMarks) const SizedBox(width: 6),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -2070,9 +2142,7 @@ class _IntroCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [color, color.withValues(alpha: 0.65)],
-        ),
+        gradient: PortalColors.themedAccentGradient(color),
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
@@ -2148,6 +2218,31 @@ class _Pill extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 11),
+      ),
+    );
+  }
+}
+
+class _SerialBadge extends StatelessWidget {
+  const _SerialBadge({required this.serial});
+
+  final int serial;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        '#$serial',
+        style: const TextStyle(
+          color: Color(0xFFE7C955),
+          fontWeight: FontWeight.w900,
+          fontSize: 11,
+        ),
       ),
     );
   }
@@ -2239,6 +2334,41 @@ class _EmptyHint extends StatelessWidget {
             child: Text(
               text,
               style: const TextStyle(color: PortalColors.subtleText),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoHint extends StatelessWidget {
+  const _InfoHint({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: PortalColors.softBlue,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: PortalColors.blueBorder),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline_rounded, color: PortalColors.brandBlue),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: PortalColors.subtleText,
+                fontSize: 12,
+                height: 1.35,
+              ),
             ),
           ),
         ],

@@ -15,6 +15,7 @@ import '../connect/event_home_page.dart';
 import '../connect/connect_models.dart';
 import '../theme/theme_picker.dart';
 import '../ui/student_portal_shell.dart';
+import 'menu_switcher.dart';
 import 'menu_wheel.dart';
 import 'teacher_dashboard_models.dart';
 import 'teacher_dashboard_theme.dart';
@@ -91,7 +92,7 @@ class TeacherDashboardHomeView extends StatelessWidget {
           const SizedBox(height: 12),
           // Menu as a spinning wheel — flick to spin, or tap any item to open.
           Expanded(
-            child: MenuWheel(
+            child: MenuSwitcher(
               items: [
               WheelItem(
                 icon: Icons.notifications_outlined,
@@ -281,7 +282,7 @@ class ExamAttendanceHomeView extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Expanded(
-            child: MenuWheel(
+            child: MenuSwitcher(
               items: [
             WheelItem(
               icon: Icons.qr_code_scanner_rounded,

@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function isCurrentClient() {
       return request.resource.data.client_build is int
-        && request.resource.data.client_build >= 100;
+        && request.resource.data.client_build >= 114;
     }
 
     function isFypSyncCollection(collection) {

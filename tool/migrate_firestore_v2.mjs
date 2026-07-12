@@ -3,8 +3,8 @@ const apiKey =
   process.env.FIREBASE_API_KEY || 'AIzaSyDyf9pt9HQfsQxh7FPOYb8jKa9NXwHqwPs';
 const namespaceCollection = 'aust_portal_v2';
 const namespaceDocument = 'data';
-const currentBuild = 100;
-const currentVersion = '2.10.4';
+const currentBuild = 114;
+const currentVersion = '2.13.6';
 
 const collections = [
   'cloud_fyp_groups',

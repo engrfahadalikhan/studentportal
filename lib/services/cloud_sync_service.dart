@@ -647,13 +647,20 @@ class CloudSyncService extends ChangeNotifier {
   }
 
   DateTime? _lastFypPullAt;
+  bool _lastFypPullIncludedEvaluations = false;
 
-  Future<void> pullFypWorkspace({bool force = false}) async {
+  Future<void> pullFypWorkspace({
+    bool force = false,
+    bool includeEvaluations = true,
+  }) async {
     if (Firebase.apps.isEmpty) return;
     status = 'Pulling FYP...';
     notifyListeners();
     try {
-      await _pullFypWorkspaceOnce(force: force);
+      await _pullFypWorkspaceOnce(
+        force: force,
+        includeEvaluations: includeEvaluations,
+      );
       lastSyncAt = DateTime.now();
       if (_started || _fypOnlyStarted) status = 'On (auto)';
     } catch (e) {
@@ -664,15 +671,20 @@ class CloudSyncService extends ChangeNotifier {
     }
   }
 
-  Future<void> _pullFypWorkspaceOnce({bool force = false}) async {
+  Future<void> _pullFypWorkspaceOnce({
+    bool force = false,
+    bool includeEvaluations = true,
+  }) async {
     if (Firebase.apps.isEmpty) return;
     final now = DateTime.now();
     if (!force &&
         _lastFypPullAt != null &&
-        now.difference(_lastFypPullAt!) < const Duration(seconds: 30)) {
+        now.difference(_lastFypPullAt!) < const Duration(seconds: 30) &&
+        (!includeEvaluations || _lastFypPullIncludedEvaluations)) {
       return;
     }
     _lastFypPullAt = now;
+    _lastFypPullIncludedEvaluations = includeEvaluations;
     final groups = await FirebasePaths.collection('cloud_fyp_groups').get();
     _applyFypGroupRows([
       for (final doc in groups.docs)
@@ -693,11 +705,16 @@ class CloudSyncService extends ChangeNotifier {
       for (final doc in viva.docs)
         Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
     ]);
-    final evals = await FirebasePaths.collection('cloud_fyp_evaluations').get();
-    _applyFypEvaluationRows([
-      for (final doc in evals.docs)
-        Map<String, dynamic>.from(doc.data())..putIfAbsent('id', () => doc.id),
-    ]);
+    if (includeEvaluations) {
+      final evals = await FirebasePaths.collection(
+        'cloud_fyp_evaluations',
+      ).get();
+      _applyFypEvaluationRows([
+        for (final doc in evals.docs)
+          Map<String, dynamic>.from(doc.data())
+            ..putIfAbsent('id', () => doc.id),
+      ]);
+    }
     for (final kind in FypRepository.artifactKinds) {
       final docs = await FirebasePaths.collection('cloud_fyp_$kind').get();
       _applyFypArtifactRows(kind, [
