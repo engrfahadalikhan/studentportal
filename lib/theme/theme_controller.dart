@@ -10,9 +10,9 @@ class ThemeController extends ChangeNotifier {
   static final ThemeController instance = ThemeController._();
 
   static const _prefsKey = 'theme_mode_v1';
-  // Bumped to v2 so existing installs drop their old saved palette and pick up
-  // the new default (Gold) until the user chooses one explicitly.
-  static const _paletteKey = 'theme_palette_v2';
+  // Bumped to v3 so existing installs drop their old saved palette and pick up
+  // the new default (Ledger Board) until the user chooses one explicitly.
+  static const _paletteKey = 'theme_palette_v3';
 
   ThemeMode _mode = ThemeMode.system;
   ThemeMode get mode => _mode;

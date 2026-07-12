@@ -48,10 +48,22 @@ class AppPalette {
 
 /// The curated set of themes shown in the appearance picker.
 ///
-/// `Gold` is first so it is the default (and the `paletteById` fallback): an
-/// elegant black + gold look on a warm cream page — dark antique-gold primary,
-/// brighter gold accent, near-black→deep-gold hero gradient.
+/// `Ledger Board` is first so it is the default (and the `paletteById`
+/// fallback): the redesign identity shared with CSEXAM — registrar green ink.
+/// Brass stays reserved for the session marker, so the brand accent is a
+/// lighter green rather than gold. Gold and the FYP palettes remain
+/// selectable for anyone who prefers them.
 const List<AppPalette> kAppPalettes = [
+  AppPalette(
+    id: 'ledger_board',
+    label: 'Ledger Board',
+    primary: Color(0xFF1E5B45),
+    secondary: Color(0xFF2E7D57),
+    soft: Color(0xFFE2F0E8),
+    border: Color(0xFFCADED4),
+    heroFrom: Color(0xFF13221C),
+    heroTo: Color(0xFF1E5B45),
+  ),
   AppPalette(
     id: 'gold',
     label: 'Gold',
