@@ -30,7 +30,8 @@ void main() {
     await repository.signIn(
       role: AppRole.faculty,
       username: teacher.email,
-      password: '',
+      // Seed teachers use the shared default password.
+      password: 'aust12345',
     );
 
     expect(repository.coursesForTeacher(teacher), isNotEmpty);
@@ -85,13 +86,15 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
 
       expect(find.text('Home'), findsOneWidget);
-      expect(find.text('Assessment Generator'), findsOneWidget);
-      expect(find.text('Exam Attendance'), findsAtLeastNWidgets(1));
+      expect(find.text('Assessments'), findsAtLeastNWidgets(1));
+      expect(find.text('Exam'), findsAtLeastNWidgets(1));
       expect(
         find.text('Welcome, Teacher ${teacher.name}'),
         findsAtLeastNWidgets(1),
       );
-      expect(find.text('Registered courses'), findsAtLeastNWidgets(1));
+      // The teacher home is the spinning wheel menu (v1.7.0) — the old
+      // "Registered courses" card no longer exists on the home screen.
+      expect(find.text('Spin'), findsAtLeastNWidgets(1));
     }
   });
 

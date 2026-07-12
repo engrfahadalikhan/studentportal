@@ -1,16 +1,24 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
 
 import '../assessment/assessment_models.dart';
+import '../assessment/registration_course_data.dart' as registration;
+import '../services/cloud_sync_service.dart';
+import '../services/login_store.dart';
 import '../ui/student_portal_shell.dart';
 import 'fyp_allocation_pdf.dart';
+import 'fyp_groups_tabs.dart';
 import 'fyp_consent_pdf.dart';
 import 'fyp_evaluation_pdf.dart';
+import 'fyp_group_models.dart';
 import 'fyp_idea_pdf.dart';
 import 'fyp_meeting_pdf.dart';
 import 'fyp_models.dart';
 import 'fyp_repository.dart';
+import 'fyp_viva_page.dart';
 
 /// Teacher-side FYP hub. Four tabs mirror the teacher actions:
 ///
@@ -37,7 +45,24 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 8, vsync: this);
+    unawaited(_refreshFyp(force: false));
+  }
+
+  Future<void> _refreshFyp({bool force = true}) {
+    return CloudSyncService.instance.pullFypWorkspace(force: force);
+  }
+
+  /// Every known teacher name (registration seed + custom logins + me) for
+  /// the supervisor / coordinator / examiner dropdowns.
+  List<String> _allTeacherNames() {
+    final names = <String>{
+      for (final t in registration.registrationTeachers) t.name,
+      for (final c in LoginStore.instance.customTeachers()) c.name,
+      widget.teacher.name,
+    }..removeWhere((e) => e.trim().isEmpty);
+    final list = names.toList()..sort();
+    return list;
   }
 
   @override
@@ -51,18 +76,26 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
     return AnimatedBuilder(
       animation: _repo,
       builder: (context, _) {
+        final isCoordinator = _repo.isCoordinator(widget.teacher.name);
         return Scaffold(
           backgroundColor: PortalColors.pageBackground,
           appBar: AppBar(
             title: const Text('FYP Workspace'),
+            actions: [
+              IconButton(
+                tooltip: 'Refresh FYP',
+                onPressed: () => unawaited(_refreshFyp()),
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
             bottom: TabBar(
               controller: _tabController,
               isScrollable: true,
               tabAlignment: TabAlignment.start,
-              labelColor: PortalColors.brandBlue,
-              unselectedLabelColor: PortalColors.subtleText,
-              indicatorColor: PortalColors.brandBlue,
               tabs: const [
+                Tab(text: 'Groups'),
+                Tab(text: 'My FYP Students'),
+                Tab(text: 'Examination'),
                 Tab(text: 'My Ideas'),
                 Tab(text: 'Allocations'),
                 Tab(text: 'Meeting Logs'),
@@ -74,6 +107,19 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
           body: TabBarView(
             controller: _tabController,
             children: [
+              isCoordinator
+                  ? FypAdminGroupsPage(
+                      title: 'FYP Groups (coordinator)',
+                      actorName: widget.teacher.name,
+                      allowCoordinatorAppointment: false,
+                      embedInParent: true,
+                    )
+                  : FypTeacherGroupsTab(
+                      teacherName: widget.teacher.name,
+                      teacherNames: _allTeacherNames(),
+                    ),
+              _MyFypStudentsTab(teacher: widget.teacher, repo: _repo),
+              _ExaminationTab(teacher: widget.teacher, repo: _repo),
               _MyIdeasTab(teacher: widget.teacher, repo: _repo),
               _AllocationsReviewTab(teacher: widget.teacher, repo: _repo),
               _MeetingLogsReviewTab(teacher: widget.teacher, repo: _repo),
@@ -88,8 +134,391 @@ class _FypTeacherSectionState extends State<FypTeacherSection>
 }
 
 // ============================================================================
-// Tab 1 — Faculty publishes FYP ideas
+// Tab 1 — My FYP students
 // ============================================================================
+class _MyFypStudentsTab extends StatelessWidget {
+  const _MyFypStudentsTab({required this.teacher, required this.repo});
+
+  final AssessmentTeacher teacher;
+  final FypRepository repo;
+
+  @override
+  Widget build(BuildContext context) {
+    final groups = repo.groupsForTeacher(teacher.name);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      children: [
+        _IntroCard(
+          icon: Icons.school_outlined,
+          color: const Color(0xFF047857),
+          title: 'My FYP Students',
+          message:
+              'Students from the FYP groups where you are supervisor, co-supervisor, or examiner are listed here.',
+        ),
+        const SizedBox(height: 14),
+        _ListHeading('Assigned FYP groups (${groups.length})'),
+        if (groups.isEmpty)
+          const _EmptyHint(text: 'No FYP students are assigned to you yet.')
+        else
+          for (final group in groups)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _MyFypStudentsCard(
+                group: group,
+                teacherName: teacher.name,
+                evaluations: repo.evaluationsForGroup(group.id),
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+class _MyFypStudentsCard extends StatelessWidget {
+  const _MyFypStudentsCard({
+    required this.group,
+    required this.teacherName,
+    required this.evaluations,
+  });
+
+  final FypGroup group;
+  final String teacherName;
+  final List<FypEvaluation> evaluations;
+
+  bool _sameTeacher(String a, String b) =>
+      a.trim().toLowerCase() == b.trim().toLowerCase();
+
+  String get _myRole {
+    final roles = <String>[];
+    if (_sameTeacher(group.supervisorName, teacherName)) {
+      roles.add('Supervisor');
+    }
+    if (_sameTeacher(group.coSupervisorName, teacherName)) {
+      roles.add('Co-supervisor');
+    }
+    if (group.examiners.any((e) => _sameTeacher(e, teacherName))) {
+      roles.add('Examiner');
+    }
+    return roles.isEmpty ? 'Teacher' : roles.join(' / ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _RecordCard(
+      borderColor: const Color(0xFFA7F3D0),
+      header: Row(
+        children: [
+          _Pill(
+            label: group.phase.label,
+            bg: const Color(0xFFD1FAE5),
+            fg: const Color(0xFF047857),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              group.title.isEmpty ? '(untitled group)' : group.title,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          _StatusChip(label: _myRole),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${group.program.label} - ${group.term} - ${group.status.label}',
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: PortalColors.subtleText,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Supervisor: ${group.supervisorName.isEmpty ? 'Not set' : group.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
+          if (group.coSupervisorName.isNotEmpty)
+            Text(
+              'Co-supervisor: ${group.coSupervisorName}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          if (group.examiners.isNotEmpty)
+            Text(
+              'Examiners: ${group.examiners.join(', ')}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          const SizedBox(height: 8),
+          const Text(
+            'Students',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+          ),
+          const SizedBox(height: 4),
+          for (final member in group.members)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text(
+                '${member.serialNo}. ${member.rollNo}  ${member.name}',
+                style: const TextStyle(fontSize: 12.5),
+              ),
+            ),
+          if (evaluations.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Evaluation marks',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+            ),
+            const SizedBox(height: 4),
+            for (final evaluation in evaluations)
+              Text(
+                '${evaluation.kind.label}: ${evaluation.marksObtained}/${evaluation.marksMax} by ${evaluation.examinerName}',
+                style: const TextStyle(fontSize: 12),
+              ),
+          ],
+          if (group.examiners.any((e) => e.trim().isNotEmpty)) ...[
+            const SizedBox(height: 6),
+            Builder(
+              builder: (_) {
+                final assigned = [
+                  for (final e in group.examiners)
+                    if (e.trim().isNotEmpty) e.trim(),
+                ];
+                final marked = {
+                  for (final e in evaluations)
+                    e.examinerName.trim().toLowerCase(),
+                };
+                final pending = [
+                  for (final a in assigned)
+                    if (!marked.contains(a.toLowerCase())) a,
+                ];
+                return Text(
+                  'Examiners marked: ${assigned.length - pending.length} of '
+                  '${assigned.length}'
+                  '${pending.isEmpty ? '' : '  •  Pending: ${pending.join(', ')}'}',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: PortalColors.subtleText,
+                    fontWeight: FontWeight.w600,
+                  ),
+                );
+              },
+            ),
+          ],
+        ],
+      ),
+      actions: const [],
+    );
+  }
+}
+
+// ============================================================================
+// Tab — Examination (panels the teacher examines + their students + viva queue)
+// ============================================================================
+class _ExaminationTab extends StatelessWidget {
+  const _ExaminationTab({required this.teacher, required this.repo});
+
+  final AssessmentTeacher teacher;
+  final FypRepository repo;
+
+  @override
+  Widget build(BuildContext context) {
+    final groups = repo.groupsWhereExaminer(teacher.name);
+    final liveViva = repo.runningVivaInvolvingExaminer(teacher.name);
+    final students = <String>{
+      for (final g in groups)
+        for (final m in g.members) m.rollNo.trim().toLowerCase(),
+    }..removeWhere((e) => e.isEmpty);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      children: [
+        _IntroCard(
+          icon: Icons.gavel_rounded,
+          color: const Color(0xFFB45309),
+          title: 'Examination',
+          message:
+              'The groups you sit on as an examiner (panel), and their '
+              'students. Run the viva turn queue and enter marks from here.',
+        ),
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: liveViva != null
+                  ? const Color(0xFF047857)
+                  : const Color(0xFFB45309),
+            ),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => FypVivaPage(examinerName: teacher.name),
+              ),
+            ),
+            icon: const Icon(Icons.record_voice_over_rounded),
+            label: Text(
+              liveViva != null
+                  ? 'Viva LIVE — open turn queue'
+                  : 'Set up / start viva turn queue',
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _ListHeading(
+          'My examiner panels (${groups.length} groups · ${students.length} students)',
+        ),
+        if (groups.isEmpty)
+          const _EmptyHint(
+            text:
+                'You are not on any examiner panel yet. The FYP coordinator '
+                'assigns examiners / panels from the Groups workspace.',
+          )
+        else
+          for (final group in groups)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _ExaminationGroupCard(
+                group: group,
+                teacher: teacher,
+                repo: repo,
+                isCurrentViva: liveViva?.currentGroupId == group.id,
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+class _ExaminationGroupCard extends StatelessWidget {
+  const _ExaminationGroupCard({
+    required this.group,
+    required this.teacher,
+    required this.repo,
+    required this.isCurrentViva,
+  });
+
+  final FypGroup group;
+  final AssessmentTeacher teacher;
+  final FypRepository repo;
+  final bool isCurrentViva;
+
+  Future<void> _openForm(BuildContext context, FypEvaluationKind kind) {
+    return Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _EvaluationFormPage(
+          kind: kind,
+          teacher: teacher,
+          repo: repo,
+          initialGroup: group,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mine = repo
+        .evaluationsForGroup(group.id)
+        .where(
+          (e) =>
+              e.examinerName.trim().toLowerCase() ==
+              teacher.name.trim().toLowerCase(),
+        )
+        .toList(growable: false);
+    final evaluated = mine.isNotEmpty;
+    final serial = repo.serialOf(group);
+    return _RecordCard(
+      borderColor: isCurrentViva
+          ? const Color(0xFF6EE7B7)
+          : const Color(0xFFFCD9A5),
+      header: Row(
+        children: [
+          _Pill(
+            label: group.phase.label,
+            bg: const Color(0xFFFEF3C7),
+            fg: const Color(0xFFB45309),
+          ),
+          if (serial > 0) ...[
+            const SizedBox(width: 8),
+            _SerialBadge(serial: serial),
+          ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              group.title.isEmpty ? '(untitled group)' : group.title,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          if (isCurrentViva)
+            const _StatusChip(label: 'ON THE FLOOR')
+          else if (evaluated)
+            const _StatusChip(label: 'Marked')
+          else
+            _StatusChip(label: '${group.members.length} students'),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${group.program.label}'
+            '${group.term.isEmpty ? '' : ' · ${group.term}'} · '
+            'Supervisor: ${group.supervisorName.isEmpty ? '—' : group.supervisorName}',
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: PortalColors.subtleText,
+            ),
+          ),
+          if (group.examiners.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Panel: ${group.examiners.join(', ')}',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFB45309),
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          const Text(
+            'Students',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+          ),
+          for (final m in group.members)
+            Text(
+              '•  ${m.rollNo}  ${m.name}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          if (mine.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'My marks',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+            ),
+            for (final e in mine)
+              Text(
+                '${e.kind.label}: ${e.marksObtained}/${e.marksMax} · ${e.presentationDecision.label}',
+                style: const TextStyle(fontSize: 12),
+              ),
+          ],
+        ],
+      ),
+      actions: [
+        FilledButton.icon(
+          onPressed: () => _openForm(context, FypEvaluationKind.proposal),
+          icon: const Icon(Icons.assignment_outlined, size: 18),
+          label: const Text('Proposal marks'),
+        ),
+        FilledButton.icon(
+          onPressed: () => _openForm(context, FypEvaluationKind.srs),
+          icon: const Icon(Icons.description_outlined, size: 18),
+          label: const Text('SRS marks'),
+        ),
+      ],
+    );
+  }
+}
+
 class _MyIdeasTab extends StatelessWidget {
   const _MyIdeasTab({required this.teacher, required this.repo});
 
@@ -164,23 +593,25 @@ class _IdeaCard extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
-          _StatusChip(
-            label: idea.takenByGroupId.isEmpty ? 'Open' : 'Claimed',
-          ),
+          _StatusChip(label: idea.takenByGroupId.isEmpty ? 'Open' : 'Claimed'),
         ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Domain: ${idea.projectDomain}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Domain: ${idea.projectDomain}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           Text(
             idea.description,
             style: const TextStyle(fontSize: 12.5, height: 1.4),
           ),
           if (idea.tools.isNotEmpty)
-            Text('Tools: ${idea.tools}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Tools: ${idea.tools}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
         ],
       ),
       actions: [
@@ -198,10 +629,7 @@ class _IdeaCard extends StatelessWidget {
         OutlinedButton.icon(
           onPressed: () async {
             final bytes = await buildFypIdeaPdf(idea);
-            await Printing.sharePdf(
-              bytes: bytes,
-              filename: '${idea.id}.pdf',
-            );
+            await Printing.sharePdf(bytes: bytes, filename: '${idea.id}.pdf');
           },
           icon: const Icon(Icons.share_rounded),
           label: const Text('Share'),
@@ -301,9 +729,7 @@ class _IdeaFormPageState extends State<_IdeaFormPage> {
                     controller: _description,
                     minLines: 3,
                     maxLines: 6,
-                    decoration: const InputDecoration(
-                      labelText: 'Description',
-                    ),
+                    decoration: const InputDecoration(labelText: 'Description'),
                     validator: _required,
                   ),
                   const SizedBox(height: 10),
@@ -466,8 +892,13 @@ class _AllocationReviewCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-              'Role: ${_imSupervisor ? 'Main Supervisor' : _imCoSupervisor ? 'Co-Supervisor' : '—'}',
-              style: const TextStyle(fontSize: 12.5)),
+            'Role: ${_imSupervisor
+                ? 'Main Supervisor'
+                : _imCoSupervisor
+                ? 'Co-Supervisor'
+                : '—'}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           const SizedBox(height: 4),
           Text(
             'Members: ${allocation.members.map((m) => '${m.rollNo} ${m.name}').join(', ')}',
@@ -475,8 +906,10 @@ class _AllocationReviewCard extends StatelessWidget {
           ),
           if (allocation.expectedOutcome.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Expected outcome: ${allocation.expectedOutcome}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Expected outcome: ${allocation.expectedOutcome}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
         ],
       ),
@@ -564,29 +997,37 @@ class _MeetingLogReviewCard extends StatelessWidget {
             ),
           ),
           _StatusChip(
-              label: log.isSupervisorFilled ? 'Closed' : 'Section 2 pending'),
+            label: log.isSupervisorFilled ? 'Closed' : 'Section 2 pending',
+          ),
         ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-              'Members: ${log.members.map((m) => '${m.rollNo} ${m.name}').join(', ')}',
-              style: const TextStyle(fontSize: 12.5)),
+            'Members: ${log.members.map((m) => '${m.rollNo} ${m.name}').join(', ')}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           if (log.workDoneSinceLastMeeting.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Work done: ${log.workDoneSinceLastMeeting}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Work done: ${log.workDoneSinceLastMeeting}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
           if (log.issuesToDiscuss.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Issues / tasks: ${log.issuesToDiscuss}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Issues / tasks: ${log.issuesToDiscuss}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
           if (log.tasksAssigned.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Tasks assigned: ${log.tasksAssigned}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Tasks assigned: ${log.tasksAssigned}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
         ],
       ),
@@ -618,8 +1059,7 @@ class _MeetingLogReviewCard extends StatelessWidget {
     FypRepository repo,
   ) async {
     final tasksController = TextEditingController(text: log.tasksAssigned);
-    final nextController =
-        TextEditingController(text: log.nextMeetingDate);
+    final nextController = TextEditingController(text: log.nextMeetingDate);
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -636,9 +1076,8 @@ class _MeetingLogReviewCard extends StatelessWidget {
                 children: [
                   Text(
                     'Section 2 — Supervisor',
-                    style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                    style: Theme.of(sheetContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 12),
                   TextField(
@@ -669,8 +1108,7 @@ class _MeetingLogReviewCard extends StatelessWidget {
                       const SizedBox(width: 10),
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () =>
-                              Navigator.of(sheetContext).pop(true),
+                          onPressed: () => Navigator.of(sheetContext).pop(true),
                           icon: const Icon(Icons.check_rounded),
                           label: const Text('Save'),
                         ),
@@ -708,6 +1146,7 @@ class _EvaluationsEntryTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final entered = repo.evaluationsByExaminer(teacher.name);
+    final examinerGroups = repo.groupsWhereExaminer(teacher.name);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
@@ -716,26 +1155,26 @@ class _EvaluationsEntryTab extends StatelessWidget {
           color: const Color(0xFFB91C1C),
           title: 'Examiner evaluations',
           message:
-              'Enter rubric scores for Proposal and SRS evaluations you examine. Students see the marks in their FYP tab immediately.',
+              'Select one of your assigned examiner groups, enter marks and remarks, then close the presentation or request a re-presentation.',
         ),
         const SizedBox(height: 14),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            FilledButton.icon(
-              onPressed: () =>
-                  _openForm(context, FypEvaluationKind.proposal),
-              icon: const Icon(Icons.note_add_outlined),
-              label: const Text('New Proposal Evaluation'),
+        _ListHeading('My examiner groups (${examinerGroups.length})'),
+        if (examinerGroups.isEmpty)
+          const _EmptyHint(
+            text:
+                'No examiner groups are assigned to you yet. The FYP coordinator can assign examiners from the Groups workspace.',
+          )
+        else
+          for (final group in examinerGroups)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _ExaminerGroupEvaluationCard(
+                group: group,
+                teacher: teacher,
+                repo: repo,
+                onEvaluate: (kind) => _openForm(context, kind, group),
+              ),
             ),
-            FilledButton.icon(
-              onPressed: () => _openForm(context, FypEvaluationKind.srs),
-              icon: const Icon(Icons.note_add_outlined),
-              label: const Text('New SRS Evaluation'),
-            ),
-          ],
-        ),
         const SizedBox(height: 18),
         _ListHeading('My evaluations'),
         if (entered.isEmpty)
@@ -753,6 +1192,7 @@ class _EvaluationsEntryTab extends StatelessWidget {
   Future<void> _openForm(
     BuildContext context,
     FypEvaluationKind kind,
+    FypGroup group,
   ) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -760,8 +1200,106 @@ class _EvaluationsEntryTab extends StatelessWidget {
           kind: kind,
           teacher: teacher,
           repo: repo,
+          initialGroup: group,
         ),
       ),
+    );
+  }
+}
+
+class _ExaminerGroupEvaluationCard extends StatelessWidget {
+  const _ExaminerGroupEvaluationCard({
+    required this.group,
+    required this.teacher,
+    required this.repo,
+    required this.onEvaluate,
+  });
+
+  final FypGroup group;
+  final AssessmentTeacher teacher;
+  final FypRepository repo;
+  final ValueChanged<FypEvaluationKind> onEvaluate;
+
+  @override
+  Widget build(BuildContext context) {
+    final existing = repo
+        .evaluationsForGroup(group.id)
+        .where(
+          (evaluation) =>
+              evaluation.examinerName.trim().toLowerCase() ==
+              teacher.name.trim().toLowerCase(),
+        )
+        .toList(growable: false);
+    final serial = repo.serialOf(group);
+    return _RecordCard(
+      borderColor: const Color(0xFFFCA5A5),
+      header: Row(
+        children: [
+          _Pill(
+            label: group.phase.label,
+            bg: const Color(0xFFFEE2E2),
+            fg: const Color(0xFFB91C1C),
+          ),
+          if (serial > 0) ...[
+            const SizedBox(width: 8),
+            _SerialBadge(serial: serial),
+          ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              group.title.isEmpty ? '(untitled group)' : group.title,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          _StatusChip(label: '${group.members.length} students'),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${group.program.label} - ${group.term}',
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: PortalColors.subtleText,
+            ),
+          ),
+          Text(
+            'Supervisor: ${group.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
+          const SizedBox(height: 6),
+          for (final member in group.members)
+            Text(
+              '${member.rollNo}  ${member.name}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          if (existing.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Already recorded',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+            ),
+            for (final evaluation in existing)
+              Text(
+                '${evaluation.kind.label}: ${evaluation.marksObtained}/${evaluation.marksMax} - ${evaluation.presentationDecision.label}',
+                style: const TextStyle(fontSize: 12),
+              ),
+          ],
+        ],
+      ),
+      actions: [
+        FilledButton.icon(
+          onPressed: () => onEvaluate(FypEvaluationKind.proposal),
+          icon: const Icon(Icons.assignment_outlined),
+          label: const Text('Proposal marks'),
+        ),
+        FilledButton.icon(
+          onPressed: () => onEvaluate(FypEvaluationKind.srs),
+          icon: const Icon(Icons.description_outlined),
+          label: const Text('SRS marks'),
+        ),
+      ],
     );
   }
 }
@@ -790,18 +1328,32 @@ class _EvaluationCard extends StatelessWidget {
             ),
           ),
           _StatusChip(
-              label: '${evaluation.marksObtained}/${evaluation.marksMax}'),
+            label: '${evaluation.marksObtained}/${evaluation.marksMax}',
+          ),
         ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Supervisor: ${evaluation.supervisorName}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Supervisor: ${evaluation.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           Text(
             'Submitted: ${DateFormat('dd MMM yyyy').format(evaluation.submittedAt)}',
             style: const TextStyle(fontSize: 12.5),
           ),
+          Text(
+            'Presentation: ${evaluation.presentationDecision.label}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
+          if (evaluation.remarks.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Remarks: ${evaluation.remarks}',
+              style: const TextStyle(fontSize: 12.5, height: 1.35),
+            ),
+          ],
         ],
       ),
       actions: [
@@ -826,11 +1378,13 @@ class _EvaluationFormPage extends StatefulWidget {
     required this.kind,
     required this.teacher,
     required this.repo,
+    required this.initialGroup,
   });
 
   final FypEvaluationKind kind;
   final AssessmentTeacher teacher;
   final FypRepository repo;
+  final FypGroup initialGroup;
 
   @override
   State<_EvaluationFormPage> createState() => _EvaluationFormPageState();
@@ -840,10 +1394,17 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
   final _formKey = GlobalKey<FormState>();
   final _title = TextEditingController();
   final _supervisor = TextEditingController();
+  final _remarks = TextEditingController();
+  final _directMarks = TextEditingController();
   late final List<TextEditingController> _memberRolls;
   late final List<TextEditingController> _memberNames;
   late final TextEditingController _term;
+  late final List<FypGroup> _examinerGroups;
+  String _selectedGroupId = '';
+  FypPresentationDecision _presentationDecision =
+      FypPresentationDecision.completed;
   late List<FypRubricRow> _rubric;
+  bool _useDirectMarks = false;
 
   @override
   void initState() {
@@ -851,15 +1412,19 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
     _term = TextEditingController(text: _defaultTerm());
     _memberRolls = [TextEditingController(), TextEditingController()];
     _memberNames = [TextEditingController(), TextEditingController()];
+    _examinerGroups = widget.repo.groupsWhereExaminer(widget.teacher.name);
     _rubric = widget.kind == FypEvaluationKind.proposal
         ? defaultProposalRubric()
         : defaultSrsRubric();
+    _applyGroup(widget.initialGroup);
   }
 
   @override
   void dispose() {
     _title.dispose();
     _supervisor.dispose();
+    _remarks.dispose();
+    _directMarks.dispose();
     for (final controller in _memberRolls) {
       controller.dispose();
     }
@@ -870,25 +1435,68 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
     super.dispose();
   }
 
+  FypGroup? get _selectedGroup {
+    for (final group in _examinerGroups) {
+      if (group.id == _selectedGroupId) return group;
+    }
+    return null;
+  }
+
+  void _ensureMemberControllers(int count) {
+    while (_memberRolls.length < count) {
+      _memberRolls.add(TextEditingController());
+      _memberNames.add(TextEditingController());
+    }
+  }
+
+  void _applyGroup(FypGroup group) {
+    _selectedGroupId = group.id;
+    _useDirectMarks = group.phase == FypPhase.fyp2;
+    _directMarks.clear();
+    _title.text = group.title;
+    _supervisor.text = group.supervisorName;
+    _term.text = group.term.isEmpty ? _defaultTerm() : group.term;
+    _ensureMemberControllers(group.members.length);
+    for (var i = 0; i < _memberRolls.length; i++) {
+      if (i < group.members.length) {
+        _memberRolls[i].text = group.members[i].rollNo;
+        _memberNames[i].text = group.members[i].name;
+      } else {
+        _memberRolls[i].clear();
+        _memberNames[i].clear();
+      }
+    }
+  }
+
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    final group = _selectedGroup;
+    if (group == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select an assigned FYP group first.')),
+      );
+      return;
+    }
+    final rubric = _useDirectMarks
+        ? [
+            FypRubricRow(
+              label: '${widget.kind.label} marks',
+              maxMarks: 100,
+              score: int.parse(_directMarks.text.trim()),
+            ),
+          ]
+        : _rubric;
     widget.repo.createEvaluation(
       kind: widget.kind,
+      groupId: group.id,
       term: _term.text.trim(),
       projectTitle: _title.text.trim(),
       supervisorName: _supervisor.text.trim(),
       examinerName: widget.teacher.name,
-      members: [
-        for (var i = 0; i < _memberRolls.length; i++)
-          if (_memberRolls[i].text.trim().isNotEmpty)
-            FypMember(
-              serialNo: i + 1,
-              rollNo: _memberRolls[i].text.trim(),
-              name: _memberNames[i].text.trim(),
-              email: '',
-            ),
-      ],
-      rubric: _rubric,
+      members: group.members,
+      rubric: rubric,
+      remarks: _remarks.text,
+      presentationDecision: _presentationDecision,
     );
     if (mounted) Navigator.of(context).pop();
   }
@@ -896,6 +1504,7 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
   @override
   Widget build(BuildContext context) {
     final formTitle = '${widget.kind.label} Evaluation';
+    final selectedGroup = _selectedGroup;
     return Scaffold(
       backgroundColor: PortalColors.pageBackground,
       appBar: AppBar(title: Text(formTitle)),
@@ -908,6 +1517,41 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
               title: 'Project details',
               child: Column(
                 children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: _selectedGroupId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Assigned FYP group',
+                      prefixIcon: Icon(Icons.groups_outlined),
+                    ),
+                    items: [
+                      for (final group in _examinerGroups)
+                        DropdownMenuItem(
+                          value: group.id,
+                          child: Text(
+                            group.title.isEmpty
+                                ? '(untitled group)'
+                                : group.title,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (groupId) {
+                      FypGroup? group;
+                      for (final candidate in _examinerGroups) {
+                        if (candidate.id == groupId) {
+                          group = candidate;
+                          break;
+                        }
+                      }
+                      final selected = group;
+                      if (selected == null) return;
+                      setState(() => _applyGroup(selected));
+                    },
+                    validator: (value) =>
+                        value == null || value.isEmpty ? 'Required' : null,
+                  ),
+                  const SizedBox(height: 10),
                   TextFormField(
                     controller: _title,
                     decoration: const InputDecoration(
@@ -939,50 +1583,154 @@ class _EvaluationFormPageState extends State<_EvaluationFormPage> {
             _FormCard(
               title: 'Group members',
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var i = 0; i < _memberRolls.length; i++) ...[
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            controller: _memberRolls[i],
-                            decoration: InputDecoration(
-                              labelText: 'Member ${i + 1} roll',
+                  if (selectedGroup == null)
+                    const Text(
+                      'Select an assigned group to load its students.',
+                      style: TextStyle(color: PortalColors.subtleText),
+                    )
+                  else
+                    for (final member in selectedGroup.members)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 28,
+                              height: 28,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFEE2E2),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                '${member.serialNo}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: Color(0xFFB91C1C),
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          flex: 2,
-                          child: TextFormField(
-                            controller: _memberNames[i],
-                            decoration: InputDecoration(
-                              labelText: 'Member ${i + 1} name',
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '${member.rollNo}  ${member.name}',
+                                style: const TextStyle(fontSize: 12.5),
+                              ),
                             ),
-                          ),
+                          ],
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                  ],
+                      ),
                 ],
               ),
             ),
             const SizedBox(height: 12),
             _FormCard(
-              title: 'Rubric scores (1–5)',
+              title: 'Marks entry',
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var i = 0; i < _rubric.length; i++)
-                    _RubricRowEditor(
-                      row: _rubric[i],
-                      onScoreChanged: (score) {
-                        setState(() {
-                          _rubric = [..._rubric];
-                          _rubric[i] = _rubric[i].copyWith(score: score);
-                        });
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(
+                        value: true,
+                        icon: Icon(Icons.pin_outlined),
+                        label: Text('Direct /100'),
+                      ),
+                      ButtonSegment(
+                        value: false,
+                        icon: Icon(Icons.fact_check_outlined),
+                        label: Text('Detailed rubric'),
+                      ),
+                    ],
+                    selected: {_useDirectMarks},
+                    onSelectionChanged: (value) =>
+                        setState(() => _useDirectMarks = value.first),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_useDirectMarks) ...[
+                    TextFormField(
+                      controller: _directMarks,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: '${widget.kind.label} marks (out of 100)',
+                        prefixIcon: const Icon(Icons.scoreboard_outlined),
+                        helperText:
+                            'Use this when the examiner wants one total mark instead of rubric rows.',
+                      ),
+                      validator: (value) {
+                        final marks = int.tryParse((value ?? '').trim());
+                        if (marks == null) return 'Enter marks from 0 to 100.';
+                        if (marks < 0 || marks > 100) {
+                          return 'Marks must be between 0 and 100.';
+                        }
+                        return null;
                       },
                     ),
+                  ] else ...[
+                    for (var i = 0; i < _rubric.length; i++)
+                      _RubricRowEditor(
+                        row: _rubric[i],
+                        onScoreChanged: (score) {
+                          setState(() {
+                            _rubric = [..._rubric];
+                            _rubric[i] = _rubric[i].copyWith(score: score);
+                          });
+                        },
+                      ),
+                  ],
+                ],
+              ),
+            ),
+            if (selectedGroup?.phase == FypPhase.fyp2) ...[
+              const SizedBox(height: 8),
+              const _InfoHint(
+                text:
+                    'FYP-II groups open in Direct /100 mode by default. Switch to Detailed rubric if the panel needs row-wise marking.',
+              ),
+            ],
+            const SizedBox(height: 12),
+            _FormCard(
+              title: 'Examiner decision',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextFormField(
+                    controller: _remarks,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Examiner remarks',
+                      prefixIcon: Icon(Icons.rate_review_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('Presentation completed'),
+                        selected:
+                            _presentationDecision ==
+                            FypPresentationDecision.completed,
+                        onSelected: (_) => setState(
+                          () => _presentationDecision =
+                              FypPresentationDecision.completed,
+                        ),
+                      ),
+                      ChoiceChip(
+                        label: const Text('Re-presentation required'),
+                        selected:
+                            _presentationDecision ==
+                            FypPresentationDecision.repeatRequired,
+                        onSelected: (_) => setState(
+                          () => _presentationDecision =
+                              FypPresentationDecision.repeatRequired,
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1017,16 +1765,20 @@ class _RubricRowEditor extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
           ),
           const SizedBox(height: 4),
-          Wrap(
-            spacing: 6,
-            children: [
-              for (var i = 1; i <= 5; i++)
-                ChoiceChip(
-                  label: Text('$i'),
-                  selected: row.score == i,
-                  onSelected: (_) => onScoreChanged(i),
-                ),
-            ],
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (var i = 1; i <= row.maxMarks; i++) ...[
+                  ChoiceChip(
+                    label: Text('$i'),
+                    selected: row.score == i,
+                    onSelected: (_) => onScoreChanged(i),
+                  ),
+                  if (i != row.maxMarks) const SizedBox(width: 6),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -1112,7 +1864,8 @@ class _ConsentCard extends StatelessWidget {
             ),
           ),
           _StatusChip(
-              label: DateFormat('dd MMM yyyy').format(consent.signedAt)),
+            label: DateFormat('dd MMM yyyy').format(consent.signedAt),
+          ),
         ],
       ),
       body: Column(
@@ -1219,8 +1972,8 @@ class _ConsentFormPageState extends State<_ConsentFormPage> {
     if (_approved.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content:
-                Text('Select at least one evaluation to approve.')),
+          content: Text('Select at least one evaluation to approve.'),
+        ),
       );
       return;
     }
@@ -1282,8 +2035,7 @@ class _ConsentFormPageState extends State<_ConsentFormPage> {
                         ChoiceChip(
                           label: Text(program.label),
                           selected: _program == program,
-                          onSelected: (_) =>
-                              setState(() => _program = program),
+                          onSelected: (_) => setState(() => _program = program),
                         ),
                     ],
                   ),
@@ -1390,9 +2142,7 @@ class _IntroCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [color, color.withValues(alpha: 0.65)],
-        ),
+        gradient: PortalColors.themedAccentGradient(color),
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
@@ -1442,9 +2192,9 @@ class _ListHeading extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-              color: PortalColors.textPrimary,
-            ),
+          fontWeight: FontWeight.w800,
+          color: PortalColors.textPrimary,
+        ),
       ),
     );
   }
@@ -1468,6 +2218,31 @@ class _Pill extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 11),
+      ),
+    );
+  }
+}
+
+class _SerialBadge extends StatelessWidget {
+  const _SerialBadge({required this.serial});
+
+  final int serial;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        '#$serial',
+        style: const TextStyle(
+          color: Color(0xFFE7C955),
+          fontWeight: FontWeight.w900,
+          fontSize: 11,
+        ),
       ),
     );
   }
@@ -1559,6 +2334,41 @@ class _EmptyHint extends StatelessWidget {
             child: Text(
               text,
               style: const TextStyle(color: PortalColors.subtleText),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoHint extends StatelessWidget {
+  const _InfoHint({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: PortalColors.softBlue,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: PortalColors.blueBorder),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline_rounded, color: PortalColors.brandBlue),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: PortalColors.subtleText,
+                fontSize: 12,
+                height: 1.35,
+              ),
             ),
           ),
         ],

@@ -1,9 +1,9 @@
-name: teacher_student_assessment_app
+﻿name: teacher_student_assessment_app
 description: "Merged Flutter teacher-student assessment and student portal app."
 
 publish_to: 'none'  # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.0+1
+version: 2.13.9+117
 
 environment:
   sdk: ^3.9.2
@@ -12,12 +12,13 @@ dependencies:
   flutter:
     sdk: flutter
 
-  firebase_core: ^3.0.0
+  firebase_core: ^3.15.2
   firebase_database: ^11.1.0
   pdf: ^3.11.1
   printing: ^5.14.2
   mobile_scanner: ^7.2.0
   sqflite: ^2.4.2
+  sqflite_common_ffi: ^2.3.5
   path: ^1.9.1
   path_provider: ^2.1.5
   connectivity_plus: ^7.1.1
@@ -27,15 +28,28 @@ dependencies:
   qr_flutter: ^4.1.0
   archive: ^4.0.9
   file_picker: ^8.1.4
+  share_plus: ^10.1.4
 
   cupertino_icons: ^1.0.8
+  cloud_firestore: ^5.6.12
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
 
   flutter_lints: ^5.0.0
-  sqflite_common_ffi: ^2.3.5
+  flutter_launcher_icons: ^0.14.1
+  image: ^4.0.0
+
+# App launcher icon ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a graduation cap on the indigoÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢teal brand gradient.
+# Regenerate with: dart run tool/generate_icon.dart && dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "assets/app_icon_bg.png"
+  adaptive_icon_foreground: "assets/app_icon_fg.png"
 
 flutter:
   uses-material-design: true

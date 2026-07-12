@@ -1,0 +1,41 @@
+# Cloud build config for Codemagic (https://codemagic.io) — lets you build the
+# iOS app WITHOUT a Mac (Apple requires macOS + Xcode, which Windows cannot do).
+#
+# How to use:
+#   1. Push this repo to GitHub/GitLab/Bitbucket.
+#   2. Sign in to codemagic.io (free tier), add this app.
+#   3. Run the "android-apk" workflow for the APK, or "ios-unsigned" for iOS.
+#   4. To get an INSTALLABLE iOS app you must add code signing in Codemagic
+#      (Apple Developer account, ~$99/yr) — then switch to a signed iOS workflow.
+workflows:
+  android-apk:
+    name: Android APK
+    max_build_duration: 60
+    instance_type: linux_x2
+    environment:
+      flutter: stable
+    scripts:
+      - name: Get packages
+        script: flutter pub get
+      - name: Build APK
+        script: flutter build apk --release
+    artifacts:
+      - build/**/outputs/**/*.apk
+
+  ios-unsigned:
+    name: iOS (unsigned — builds the app, not installable without signing)
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Get packages
+        script: flutter pub get
+      - name: Pod install
+        script: cd ios && pod install
+      - name: Build iOS (no code signing)
+        script: flutter build ios --release --no-codesign
+    artifacts:
+      - build/ios/iphoneos/*.app

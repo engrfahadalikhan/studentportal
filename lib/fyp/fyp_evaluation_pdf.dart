@@ -29,27 +29,20 @@ Future<Uint8List> buildFypEvaluationPdf(FypEvaluation evaluation) async {
       pageFormat: PdfPageFormat.a4,
       margin: const pw.EdgeInsets.fromLTRB(28, 22, 28, 18),
       build: (context) => [
-        fypHeader(
-          assets,
-          formTitle: formTitle,
-          subTitle: evaluation.term,
-        ),
+        fypHeader(assets, formTitle: formTitle, subTitle: evaluation.term),
         pw.SizedBox(height: 10),
         _scaleLegend(assets.boldFont),
         pw.SizedBox(height: 12),
-        fypInfoTable(
+        fypInfoTable([
+          ['FYP Title', evaluation.projectTitle],
+          ['Supervised by', evaluation.supervisorName],
           [
-            ['FYP Title', evaluation.projectTitle],
-            ['Supervised by', evaluation.supervisorName],
-            [
-              'Group Members',
-              evaluation.members
-                  .map((m) => '${m.serialNo}. ${m.name} (${m.rollNo})')
-                  .join('\n'),
-            ],
+            'Group Members',
+            evaluation.members
+                .map((m) => '${m.serialNo}. ${m.name} (${m.rollNo})')
+                .join('\n'),
           ],
-          assets.boldFont,
-        ),
+        ], assets.boldFont),
         pw.SizedBox(height: 12),
         fypSectionTitle('Technical Evaluation', assets.boldFont),
         pw.SizedBox(height: 6),
@@ -64,10 +57,12 @@ Future<Uint8List> buildFypEvaluationPdf(FypEvaluation evaluation) async {
               'Marks obtained',
               '${evaluation.marksObtained} / ${evaluation.marksMax}',
             ],
+            ['Presentation decision', evaluation.presentationDecision.label],
             [
-              'Date',
-              evaluation.submittedAt.toIso8601String().substring(0, 10),
+              'Examiner remarks',
+              evaluation.remarks.isEmpty ? '-' : evaluation.remarks,
             ],
+            ['Date', evaluation.submittedAt.toIso8601String().substring(0, 10)],
           ],
           assets.boldFont,
           labelWidth: 140,
@@ -89,10 +84,7 @@ pw.Widget _scaleLegend(pw.Font boldFont) {
     children: [
       pw.Expanded(
         child: pw.Container(
-          padding: const pw.EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 5,
-          ),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           color: const PdfColor.fromInt(0xFFFEE2E2),
           child: pw.Text(
             '1–2 : Does not meet expectations',
@@ -103,10 +95,7 @@ pw.Widget _scaleLegend(pw.Font boldFont) {
       pw.SizedBox(width: 6),
       pw.Expanded(
         child: pw.Container(
-          padding: const pw.EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 5,
-          ),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           color: const PdfColor.fromInt(0xFFFEF9C3),
           child: pw.Text(
             '3 : Meets expectations',
@@ -117,10 +106,7 @@ pw.Widget _scaleLegend(pw.Font boldFont) {
       pw.SizedBox(width: 6),
       pw.Expanded(
         child: pw.Container(
-          padding: const pw.EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 5,
-          ),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           color: const PdfColor.fromInt(0xFFDCFCE7),
           child: pw.Text(
             '4–5 : Exceeds expectations',
@@ -143,8 +129,7 @@ pw.Widget _rubricTable(List<FypRubricRow> rubric, pw.Font boldFont) {
     },
     children: [
       pw.TableRow(
-        decoration:
-            const pw.BoxDecoration(color: PdfColor.fromInt(0xFFEEEEEE)),
+        decoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFFEEEEEE)),
         children: [
           _cell('Sr. No', bold: true, boldFont: boldFont),
           _cell('Dimension', bold: true, boldFont: boldFont),
@@ -194,10 +179,7 @@ pw.Widget _cell(String text, {bool bold = false, pw.Font? boldFont}) {
     padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 4),
     child: pw.Text(
       text,
-      style: pw.TextStyle(
-        font: bold ? boldFont : null,
-        fontSize: 9.5,
-      ),
+      style: pw.TextStyle(font: bold ? boldFont : null, fontSize: 9.5),
     ),
   );
 }

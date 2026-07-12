@@ -1,6 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../assessment/assessment_mock_data.dart' as mock;
 import '../assessment/assessment_models.dart';
@@ -12,9 +15,13 @@ import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
 import '../models/verification_officer.dart';
 import '../ui/shared_widgets.dart';
+import 'cloud_sync_service.dart';
+import 'device_binding_service.dart';
 import 'local_student_enrollment_store.dart';
+import 'login_store.dart';
 import 'seating_plan_service.dart';
 import 'student_directory_service.dart';
+import 'teacher_dashboard_database.dart';
 
 class AppRepository extends ChangeNotifier {
   AppRepository({
@@ -72,6 +79,107 @@ class AppRepository extends ChangeNotifier {
       List.unmodifiable(_assessmentStudents);
   List<Assessment> get assessments => List.unmodifiable(_assessments);
   List<AssessmentSubmission> get submissions => List.unmodifiable(_submissions);
+
+  // Teacher-given assignments and student-completed submissions are stored in
+  // TWO SEPARATE database tables (`teacher_assignments`, `student_submissions`)
+  // owned by [TeacherDashboardDatabase]. These keys are only read once to
+  // migrate any data left over from the earlier SharedPreferences store.
+  static const String _kSubmissionsKey = 'student_submissions_v1';
+  static const String _kAssessmentsKey = 'teacher_assessments_v1';
+
+  final TeacherDashboardDatabase _dataDb = TeacherDashboardDatabase.instance;
+
+  /// Restores student submissions from the `student_submissions` table (one-time
+  /// migration from the legacy prefs store). UPSERTs onto the seeded list.
+  Future<void> loadPersistedSubmissions() async {
+    try {
+      var rows = await _dataDb.loadStudentSubmissions();
+      if (rows.isEmpty) {
+        rows = await _migrateLegacyList(_kSubmissionsKey);
+      }
+      for (final j in rows) {
+        final s = AssessmentSubmission.fromJson(j);
+        if (s.id.isEmpty) continue;
+        final i = _submissions.indexWhere(
+          (e) => e.assessmentId == s.assessmentId && e.studentId == s.studentId,
+        );
+        if (i == -1) {
+          _submissions.add(s);
+        } else {
+          _submissions[i] = s;
+        }
+      }
+      notifyListeners();
+      unawaited(_persistSubmissions()); // seed the table after a migration
+    } catch (_) {
+      // Corrupt/absent store — keep the seeded list, never crash startup.
+    }
+  }
+
+  Future<void> _persistSubmissions() async {
+    try {
+      await _dataDb.saveStudentSubmissions([
+        for (final s in _submissions) s.toJson(),
+      ]);
+    } catch (_) {
+      // Best-effort; an unsaved submission is still re-sharable this session.
+    }
+  }
+
+  /// Restores teacher-created assignments from the `teacher_assignments` table
+  /// (one-time migration from the legacy prefs store). UPSERTs by id.
+  Future<void> loadPersistedAssessments() async {
+    try {
+      var rows = await _dataDb.loadTeacherAssignments();
+      if (rows.isEmpty) {
+        rows = await _migrateLegacyList(_kAssessmentsKey);
+      }
+      for (final j in rows) {
+        final a = Assessment.fromJson(j);
+        if (a.id.isEmpty) continue;
+        final i = _assessments.indexWhere((e) => e.id == a.id);
+        if (i == -1) {
+          _assessments.insert(0, a);
+        } else {
+          _assessments[i] = a;
+        }
+      }
+      notifyListeners();
+      unawaited(_persistAssessments()); // seed the table after a migration
+    } catch (_) {
+      // Corrupt/absent store — keep the seeded list, never crash startup.
+    }
+  }
+
+  Future<void> _persistAssessments() async {
+    try {
+      await _dataDb.saveTeacherAssignments([
+        for (final a in _assessments) a.toJson(),
+      ]);
+    } catch (_) {
+      // Best-effort.
+    }
+  }
+
+  /// Reads (and clears) a legacy SharedPreferences JSON-list store for one-time
+  /// migration into the database tables.
+  Future<List<Map<String, Object?>>> _migrateLegacyList(String key) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(key);
+      if (raw == null || raw.isEmpty) return const [];
+      final decoded = jsonDecode(raw);
+      await prefs.remove(key);
+      if (decoded is! List) return const [];
+      return [
+        for (final e in decoded)
+          if (e is Map) e.cast<String, Object?>(),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   List<VerificationRequest> get verificationRequests =>
       List.unmodifiable(_verificationRequests);
   List<VerificationOfficer> get verificationOfficers =>
@@ -139,9 +247,27 @@ class AppRepository extends ChangeNotifier {
       throw const PortalAuthException('Enter username first.');
     }
 
+    // Pull ONLY this person's cloud password before validating (1-2 doc
+    // reads, not the whole collection) — so a password changed on another
+    // phone immediately invalidates the default here. FYP itself is pulled
+    // only when the FYP screen opens, to protect the free Firebase quota.
+    await CloudSyncService.instance.bootstrapLoginData(
+      credentialKeys: [
+        if (role == AppRole.student)
+          'student:${normalizedUsername.toLowerCase()}',
+        if (role == AppRole.faculty) ...[
+          'teacher:${normalizedUsername.toLowerCase()}',
+          'teacher:custom:${normalizedUsername.toLowerCase()}',
+        ],
+      ],
+      includeFypWorkspace: false,
+    );
+
     if (role == AppRole.admin) {
+      final expected =
+          LoginStore.instance.passwordOverride('admin') ?? 'pdfpakistan123#';
       if (normalizedUsername.toLowerCase() != 'admin' ||
-          normalizedPassword != '1234') {
+          normalizedPassword != expected) {
         throw const PortalAuthException('Admin username or password is wrong.');
       }
       _currentSession = PortalSession.admin();
@@ -149,16 +275,53 @@ class AppRepository extends ChangeNotifier {
       return;
     }
 
+    // Admin-blessed OPEN device ("Allowed for ALL"): leaving the password
+    // EMPTY signs into any teacher/student account without their password.
+    // Only the admin can turn that switch on, so the device itself is the
+    // authorization. A typed (non-empty) password is still validated normally.
+    final adminOpenDevice =
+        DeviceBindingService.instance.allowAll && normalizedPassword.isEmpty;
+
     if (role == AppRole.faculty) {
+      if (normalizedPassword.isEmpty && !adminOpenDevice) {
+        throw const PortalAuthException('Enter the teacher password.');
+      }
+
+      // Custom "Other" teacher (added from the login screen)?
+      final custom = LoginStore.instance.customTeacherByName(
+        normalizedUsername,
+      );
+      if (custom != null) {
+        final key = 'teacher:custom:${custom.name.toLowerCase()}';
+        final expected =
+            LoginStore.instance.passwordOverride(key) ?? custom.password;
+        if (!adminOpenDevice && normalizedPassword != expected) {
+          throw const PortalAuthException('Teacher password is wrong.');
+        }
+        _currentSession = PortalSession.teacher(
+          AssessmentTeacher(
+            id: 'custom:${custom.name.toLowerCase()}',
+            name: custom.name,
+            email: custom.name,
+            password: expected,
+            courseIds: const [],
+          ),
+        );
+        notifyListeners();
+        return;
+      }
+
       final teacher = teacherByEmail(normalizedUsername);
       if (teacher == null) {
         throw const PortalAuthException('Select a valid teacher first.');
       }
-
-      final storedPassword = _teacherPasswords[teacher.email.toLowerCase()];
-      if (storedPassword != null &&
-          normalizedPassword.isNotEmpty &&
-          storedPassword != normalizedPassword) {
+      // Shared default "aust12345", unless the teacher changed it.
+      final expected =
+          LoginStore.instance.passwordOverride(
+            'teacher:${teacher.email.toLowerCase()}',
+          ) ??
+          'aust12345';
+      if (!adminOpenDevice && normalizedPassword != expected) {
         throw const PortalAuthException('Teacher password is wrong.');
       }
 
@@ -168,11 +331,16 @@ class AppRepository extends ChangeNotifier {
       return;
     }
 
-    if (normalizedPassword.isEmpty) {
+    if (normalizedPassword.isEmpty && !adminOpenDevice) {
       throw const PortalAuthException('Enter password first.');
     }
 
-    if (normalizedPassword != '1234') {
+    final studentExpected =
+        LoginStore.instance.passwordOverride(
+          'student:${normalizedUsername.toLowerCase()}',
+        ) ??
+        '1234';
+    if (!adminOpenDevice && normalizedPassword != studentExpected) {
       throw const PortalAuthException('Password is incorrect.');
     }
 
@@ -210,6 +378,12 @@ class AppRepository extends ChangeNotifier {
     return _useFirebase
         ? _studentDirectory!.searchStudents(query)
         : _localStudentStore.searchStudents(query);
+  }
+
+  Future<List<StudentRecord>> classmatesFor(StudentRecord student) {
+    return _useFirebase
+        ? _studentDirectory!.classmatesFor(student)
+        : _localStudentStore.classmatesFor(student);
   }
 
   void grantVerificationAccess({
@@ -422,6 +596,12 @@ class AppRepository extends ChangeNotifier {
   }
 
   void _seedSubmissionsForAssessment(Assessment assessment) {
+    // Real teacher-created papers (expectedStudents set from enrolment) must
+    // NOT get demo submissions — that would corrupt the present/absent stats.
+    // Only the bootstrap mock assessments (expectedStudents == 0) are seeded.
+    if (assessment.expectedStudents > 0) {
+      return;
+    }
     if (_submissions.any(
       (submission) => submission.assessmentId == assessment.id,
     )) {
@@ -508,14 +688,45 @@ class AppRepository extends ChangeNotifier {
     );
   }
 
+  /// Inserts a paper received offline (decoded from a scanned QR) into the
+  /// in-memory store so the attempt flow, Live, and Results can reference it.
+  /// If a paper with the same id already exists it is returned unchanged.
+  Assessment importSharedAssessment(Assessment assessment) {
+    final existing = assessmentById(assessment.id);
+    if (existing != null) {
+      return existing;
+    }
+    _assessments.insert(0, assessment);
+    notifyListeners();
+    unawaited(_persistAssessments());
+    return assessment;
+  }
+
   List<AssessmentStudent> studentsForAssessment(Assessment assessment) {
+    // An assessment can target several sections/semesters/programs at once
+    // (stored comma-separated, e.g. "A,B,C"). Match a student if they fall in
+    // ANY of the assessment's tokens.
+    List<String> toks(String s) => s
+        .split(',')
+        .map((e) => e.trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final programs = toks(assessment.program);
+    final semesters = toks(assessment.semester);
+    final sections = toks(assessment.section);
+    bool inAny(List<String> tokens, String value) {
+      if (tokens.isEmpty) return true;
+      final v = value.trim().toLowerCase();
+      return tokens.any((t) => v == t || v.contains(t) || t.contains(v));
+    }
+
     return _assessmentStudents
         .where(
           (student) =>
-              student.program == assessment.program &&
+              inAny(programs, student.program) &&
               student.session == 'S26' &&
-              student.semester == assessment.semester &&
-              student.section == assessment.section,
+              inAny(semesters, student.semester) &&
+              inAny(sections, student.section),
         )
         .toList(growable: false);
   }
@@ -528,8 +739,13 @@ class AppRepository extends ChangeNotifier {
     required String instructions,
     required List<AssessmentQuestion> questions,
     String? program,
+    String? semester,
+    String? section,
+    int expectedStudents = 0,
   }) {
-    final id = 'A${(_assessments.length + 1).toString().padLeft(3, '0')}';
+    // Unique across app sessions so a freshly created paper never collides
+    // with a persisted/seeded id after a restart.
+    final id = 'A${DateTime.now().millisecondsSinceEpoch}';
     final totalMarks = questions.fold<int>(
       0,
       (sum, question) => sum + question.marks,
@@ -541,8 +757,12 @@ class AppRepository extends ChangeNotifier {
       type: type,
       courseId: course.id,
       program: program ?? course.program,
-      semester: course.semester,
-      section: course.section,
+      semester: (semester != null && semester.isNotEmpty)
+          ? semester
+          : course.semester,
+      section: (section != null && section.isNotEmpty)
+          ? section
+          : course.section,
       durationMinutes: durationMinutes,
       totalMarks: totalMarks,
       startTime: startTime,
@@ -553,10 +773,12 @@ class AppRepository extends ChangeNotifier {
       status: AssessmentStatus.draft,
       qrCode:
           'ASSESS_${id}_${course.id}_${course.session}_${course.semester}${course.section}',
+      expectedStudents: expectedStudents,
     );
 
     _assessments.insert(0, assessment);
     notifyListeners();
+    unawaited(_persistAssessments());
     return assessment;
   }
 
@@ -576,6 +798,47 @@ class AppRepository extends ChangeNotifier {
     );
     _seedSubmissionsForAssessment(_assessments[index]);
     notifyListeners();
+    unawaited(_persistAssessments());
+  }
+
+  /// Permanently removes a teacher-created assessment and all its submissions.
+  void deleteAssessment(String assessmentId) {
+    // Collect ids BEFORE removal so the deletion can propagate to the cloud
+    // (otherwise the synced copy would re-appear on every device).
+    final subIds = [
+      for (final s in _submissions)
+        if (s.assessmentId == assessmentId) s.id,
+    ];
+    _assessments.removeWhere((a) => a.id == assessmentId);
+    _submissions.removeWhere((s) => s.assessmentId == assessmentId);
+    notifyListeners();
+    unawaited(_persistAssessments());
+    unawaited(_persistSubmissions());
+    CloudSyncService.instance.pushDeletions([
+      ('teacher_assignments', assessmentId),
+      for (final id in subIds) ('student_submissions', id),
+    ]);
+  }
+
+  /// Applies a deletion that arrived from the cloud (tombstone): removes the
+  /// row from the in-memory lists WITHOUT pushing a new deletion (no echo).
+  void applyCloudRemoval(String table, String id) {
+    var changed = false;
+    if (table == 'teacher_assignments') {
+      final before = _assessments.length;
+      _assessments.removeWhere((a) => a.id == id);
+      _submissions.removeWhere((s) => s.assessmentId == id);
+      changed = _assessments.length != before;
+    } else if (table == 'student_submissions') {
+      final before = _submissions.length;
+      _submissions.removeWhere((s) => s.id == id);
+      changed = _submissions.length != before;
+    }
+    if (changed) {
+      notifyListeners();
+      unawaited(_persistAssessments());
+      unawaited(_persistSubmissions());
+    }
   }
 
   List<AssessmentSubmission> submissionsForAssessment(String assessmentId) {
@@ -593,9 +856,7 @@ class AppRepository extends ChangeNotifier {
       return const [];
     }
     return _submissions
-        .where(
-          (submission) => submission.studentId.toLowerCase() == normalized,
-        )
+        .where((submission) => submission.studentId.toLowerCase() == normalized)
         .toList(growable: false);
   }
 
@@ -662,13 +923,23 @@ class AppRepository extends ChangeNotifier {
           ? 'SUB${(_submissions.length + 1).toString().padLeft(3, '0')}'
           : _submissions[existingIndex].id,
       assessmentId: assessment.id,
+      assessmentTitle: assessment.title,
       studentId: student.id,
+      studentName: student.name,
+      studentProgram: student.program,
+      studentSemester: student.semester,
+      studentSection: student.section,
       status: status,
       startedAt: existingIndex == -1
           ? DateTime.now()
           : _submissions[existingIndex].startedAt,
       submittedAt: DateTime.now(),
       answers: answers,
+      // Marks are NOT computed here. The student's device has no answer key
+      // (the QR is answer-safe), so grading happens at the teacher's end via
+      // [objectiveAutoMarks] / [gradeSubmission]. A fresh submission starts
+      // ungraded.
+      marks: null,
       warningCount: warningCount,
       flags: flags,
       progress: progress,
@@ -681,6 +952,157 @@ class AppRepository extends ChangeNotifier {
       _submissions[existingIndex] = submission;
     }
     notifyListeners();
+    unawaited(_persistSubmissions());
+  }
+
+  /// Computes the objective score for [answers] against the answer key in
+  /// [authoritative] (the teacher's own copy of the assessment — the only copy
+  /// that holds correct answers). Returns the summed marks, or null when the
+  /// paper has no auto-gradable questions (e.g. an assignment) — meaning it
+  /// needs fully manual grading.
+  ///
+  /// This runs at the teacher's end (Results / grade sheet), never on the
+  /// student device, because the student's scanned copy is answer-free.
+  int? objectiveAutoMarks(
+    Assessment authoritative,
+    Map<String, String> answers,
+  ) {
+    var hasGradable = false;
+    var earned = 0;
+    for (final question in authoritative.questions) {
+      final given = (answers[question.id] ?? '').trim();
+      if (question.optionMarks.isNotEmpty) {
+        // Per-option partial credit: the student earns the marks of the option
+        // they picked (0 if blank / unrecognised).
+        hasGradable = true;
+        if (given.isNotEmpty) {
+          for (final e in question.optionMarks.entries) {
+            if (e.key.trim().toLowerCase() == given.toLowerCase()) {
+              earned += e.value;
+              break;
+            }
+          }
+        }
+      } else {
+        final correct = question.correctAnswer?.trim() ?? '';
+        if (correct.isEmpty) continue;
+        hasGradable = true;
+        if (given.isNotEmpty && given.toLowerCase() == correct.toLowerCase()) {
+          earned += question.marks;
+        }
+      }
+    }
+    return hasGradable ? earned : null;
+  }
+
+  /// Imports a submission received via a scanned QR code (offline two-phone
+  /// return path). If a submission for the same assessment+student already
+  /// exists it is replaced, so rescans are idempotent.
+  AssessmentSubmission importSubmission(AssessmentSubmission submission) {
+    final authoritative = assessmentById(submission.assessmentId);
+    final autoMarks = authoritative == null
+        ? null
+        : objectiveAutoMarks(authoritative, submission.answers);
+    final imported = autoMarks == null
+        ? submission
+        : submission.copyWith(marks: autoMarks);
+    final existing = _submissions.indexWhere(
+      (s) =>
+          s.assessmentId == imported.assessmentId &&
+          s.studentId == imported.studentId,
+    );
+    if (existing == -1) {
+      _submissions.add(imported);
+    } else {
+      // Keep the id stable so existing grade references survive.
+      _submissions[existing] = imported.copyWith(id: _submissions[existing].id);
+    }
+    notifyListeners();
+    unawaited(_persistSubmissions());
+    return existing == -1 ? imported : _submissions[existing];
+  }
+
+  /// Manually sets the marks for a submission (used to grade assignments and
+  /// long-answer questions the teacher reviews by hand).
+  void gradeSubmission({
+    required String assessmentId,
+    required String studentId,
+    required int marks,
+  }) {
+    final index = _submissions.indexWhere(
+      (submission) =>
+          submission.assessmentId == assessmentId &&
+          submission.studentId == studentId,
+    );
+    if (index == -1) {
+      return;
+    }
+    _submissions[index] = _submissions[index].copyWith(marks: marks);
+    notifyListeners();
+    unawaited(_persistSubmissions());
+  }
+
+  /// Sets the per-option marking scheme for an assessment ON THE TEACHER DEVICE
+  /// (never goes into a student QR). [scheme] maps questionId → (option text →
+  /// marks). For each scored question the question's total marks become the
+  /// highest option mark, the best option is recorded as the correct answer
+  /// (for display), and any already-scanned submissions are re-graded.
+  void setAssessmentMarkingScheme(
+    String assessmentId,
+    Map<String, Map<String, int>> scheme,
+  ) {
+    final i = _assessments.indexWhere((a) => a.id == assessmentId);
+    if (i == -1) return;
+    final a = _assessments[i];
+    final newQuestions = <AssessmentQuestion>[];
+    for (final q in a.questions) {
+      final om = scheme[q.id];
+      if (om == null || om.isEmpty) {
+        newQuestions.add(q);
+        continue;
+      }
+      var maxMark = 0;
+      String? best;
+      om.forEach((opt, mark) {
+        if (mark > maxMark) {
+          maxMark = mark;
+          best = opt;
+        }
+      });
+      newQuestions.add(
+        q.copyWith(
+          optionMarks: Map<String, int>.from(om),
+          marks: maxMark > 0 ? maxMark : q.marks,
+          correctAnswer: best ?? q.correctAnswer,
+        ),
+      );
+    }
+    final newTotal = newQuestions.fold<int>(0, (s, q) => s + q.marks);
+    final updated = a.copyWith(questions: newQuestions, totalMarks: newTotal);
+    _assessments[i] = updated;
+    // Re-grade everything already collected for this paper.
+    for (var j = 0; j < _submissions.length; j++) {
+      if (_submissions[j].assessmentId == assessmentId) {
+        final m = objectiveAutoMarks(updated, _submissions[j].answers);
+        if (m != null) _submissions[j] = _submissions[j].copyWith(marks: m);
+      }
+    }
+    notifyListeners();
+    unawaited(_persistAssessments());
+    unawaited(_persistSubmissions());
+  }
+
+  /// True when an objective (MCQ / true-false) question still has no per-option
+  /// marks set — used to prompt the teacher for the marking scheme before
+  /// scanning.
+  bool assessmentNeedsAnswerKey(String assessmentId) {
+    final a = _firstWhereOrNull(_assessments, (e) => e.id == assessmentId);
+    if (a == null) return false;
+    return a.questions.any(
+      (q) =>
+          (q.type == QuestionType.mcq || q.type == QuestionType.trueFalse) &&
+          q.optionMarks.isEmpty,
+    );
   }
 
   T? _firstWhereOrNull<T>(Iterable<T> values, bool Function(T value) test) {

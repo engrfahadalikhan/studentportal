@@ -41,8 +41,20 @@ class StudentRecord {
     final first = rows.first;
     final uniqueCourses = <String, StudentCourse>{};
 
+    // A student can carry retake subjects from LOWER semesters, so the first
+    // row's semester can be e.g. 3 while the student is really in 8. Their
+    // standing is the HIGHEST semester across all their enrolled rows — this
+    // is what decides FYP eligibility (7/8).
+    var maxSemester = 0;
+    var maxSemesterStr = _stringValue(first, const ['semester', 'Semester']);
     for (final row in rows) {
       final code = _stringValue(row, const ['CC', 'course_code']);
+      final semStr = _stringValue(row, const ['semester', 'Semester']);
+      final semNum = int.tryParse(semStr);
+      if (semNum != null && semNum > maxSemester) {
+        maxSemester = semNum;
+        maxSemesterStr = semStr;
+      }
       if (code.isEmpty) {
         continue;
       }
@@ -66,7 +78,9 @@ class StudentRecord {
         'name',
       ]),
       program: _stringValue(first, const ['program', 'Program']),
-      semester: _stringValue(first, const ['semester', 'Semester']),
+      semester: maxSemester > 0
+          ? maxSemesterStr
+          : _stringValue(first, const ['semester', 'Semester']),
       section: _stringValue(first, const ['section', 'Section']),
       sessionEnrolled: _stringValue(first, const [
         'session_enrolled',

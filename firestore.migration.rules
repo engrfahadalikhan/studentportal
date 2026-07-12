@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Temporary bridge rules for the one-time v2 migration only.
+    // This build keeps Firebase sync limited to FYP + credentials.
+    // Deploy firestore.rules immediately after migration to lock old APKs.
+
+    function isFypSyncCollection(collection) {
+      return collection in [
+        'cloud_fyp_groups',
+        'cloud_fyp_panels',
+        'cloud_fyp_meetings',
+        'cloud_fyp_viva',
+        'cloud_fyp_evaluations',
+        'cloud_fyp_submissions',
+        'cloud_fyp_ideas',
+        'cloud_fyp_allocations',
+        'cloud_fyp_proposals',
+        'cloud_fyp_meetinglogs',
+        'cloud_fyp_consents',
+        'cloud_fyp_srs',
+        'cloud_credentials',
+      ];
+    }
+
+    match /app_control/{id} {
+      allow read, write: if true;
+    }
+
+    match /aust_portal_v2/{space}/{collection}/{id} {
+      allow read, write: if isFypSyncCollection(collection);
+    }
+
+    match /cloud_fyp_groups/{id}       { allow read, write: if true; }
+    match /cloud_fyp_panels/{id}       { allow read, write: if true; }
+    match /cloud_fyp_meetings/{id}     { allow read, write: if true; }
+    match /cloud_fyp_viva/{id}         { allow read, write: if true; }
+    match /cloud_fyp_evaluations/{id}  { allow read, write: if true; }
+    match /cloud_fyp_submissions/{id}  { allow read, write: if true; }
+    match /cloud_fyp_ideas/{id}        { allow read, write: if true; }
+    match /cloud_fyp_allocations/{id}  { allow read, write: if true; }
+    match /cloud_fyp_proposals/{id}    { allow read, write: if true; }
+    match /cloud_fyp_meetinglogs/{id}  { allow read, write: if true; }
+    match /cloud_fyp_consents/{id}     { allow read, write: if true; }
+    match /cloud_fyp_srs/{id}          { allow read, write: if true; }
+    match /cloud_credentials/{id}      { allow read, write: if true; }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

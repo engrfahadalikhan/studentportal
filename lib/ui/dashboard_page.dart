@@ -1,15 +1,33 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../assessment/assessment_models.dart';
+import '../connect/connect_home_page.dart';
+import '../connect/event_home_page.dart';
+import '../connect/connect_models.dart';
 import '../features/admin_feature_controls_page.dart';
+import '../features/admin_data_sync_page.dart';
+import '../features/admin_password_manager_page.dart';
+import '../features/answer_sheet_tracker_page.dart';
+import '../fyp/fyp_groups_tabs.dart';
+import '../features/assessment_access_page.dart';
+import '../features/change_password_page.dart';
+import '../features/slot_collection_page.dart';
 import '../models/portal_session.dart';
 import '../models/student_directory_summary.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
+import '../services/device_binding_service.dart';
+import '../services/login_store.dart';
 import '../theme/app_colors.dart';
+import '../theme/theme_controller.dart';
+import '../theme/theme_picker.dart';
 import 'shared_widgets.dart';
+import 'student_portal_shell.dart';
 
-Future<void> _confirmLogout(BuildContext context, AppRepository repository) async {
+Future<void> _confirmLogout(
+  BuildContext context,
+  AppRepository repository,
+) async {
   final shouldLogout = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -44,38 +62,514 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Student Portal'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Chip(
-              avatar: Icon(
-                session.isAdmin
-                    ? Icons.admin_panel_settings_rounded
-                    : Icons.school_rounded,
-                size: 18,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (session.isAdmin && constraints.maxWidth >= 1050) {
+          return _AdminDesktopShell(repository: repository, session: session);
+        }
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('AUST Student Portal'),
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Chip(
+                  avatar: Icon(
+                    session.isAdmin
+                        ? Icons.admin_panel_settings_rounded
+                        : Icons.school_rounded,
+                    size: 18,
+                  ),
+                  label: Text(session.isAdmin ? 'Admin' : 'Student'),
+                ),
               ),
-              label: Text(session.isAdmin ? 'Admin' : 'Student'),
+              const AppearanceButton(),
+              IconButton(
+                tooltip: 'Logout',
+                onPressed: () => _confirmLogout(context, repository),
+                icon: const Icon(Icons.logout_rounded),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1100),
+                child: session.isAdmin
+                    ? _AdminDashboard(repository: repository)
+                    : _StudentDashboard(student: session.student!),
+              ),
             ),
           ),
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: () => _confirmLogout(context, repository),
-            icon: const Icon(Icons.logout_rounded),
+        );
+      },
+    );
+  }
+}
+
+class _AdminDesktopShell extends StatefulWidget {
+  const _AdminDesktopShell({required this.repository, required this.session});
+
+  final AppRepository repository;
+  final PortalSession session;
+
+  @override
+  State<_AdminDesktopShell> createState() => _AdminDesktopShellState();
+}
+
+class _AdminDesktopShellState extends State<_AdminDesktopShell> {
+  final ScrollController _scrollController = ScrollController();
+  int _selectedSection = 0;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollTo(int section, double offset) {
+    setState(() => _selectedSection = section);
+    _scrollController.animateTo(
+      offset,
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final background = isDark
+        ? Theme.of(context).colorScheme.surface
+        : const Color(0xFFEAF5FF);
+
+    return Scaffold(
+      backgroundColor: background,
+      body: Row(
+        children: [
+          SizedBox(
+            width: 286,
+            child: _AdminSidebar(
+              username: widget.session.username,
+              selectedIndex: _selectedSection,
+              onDashboard: () => _scrollTo(0, 0),
+              onAssessments: () => _scrollTo(1, 620),
+              onVerification: () => _scrollTo(2, 1350),
+              onFeatureControls: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const AdminFeatureControlsPage(),
+                ),
+              ),
+              onAnswerSheets: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const AnswerSheetTrackerPage(),
+                ),
+              ),
+              onSlotCollection: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const SlotCollectionPage(),
+                ),
+              ),
+              onAssessmentAccess: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      AssessmentAccessPage(repository: widget.repository),
+                ),
+              ),
+              onChangePassword: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      ChangePasswordPage(repository: widget.repository),
+                ),
+              ),
+              onAppearance: () => showAppearanceSheet(context),
+              onLogout: () => _confirmLogout(context, widget.repository),
+            ),
           ),
-          const SizedBox(width: 8),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned(
+                  top: -170,
+                  right: -110,
+                  child: _AmbientCircle(
+                    size: 420,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.06),
+                  ),
+                ),
+                Positioned(
+                  bottom: -220,
+                  left: 120,
+                  child: _AmbientCircle(
+                    size: 520,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.secondary.withValues(alpha: 0.05),
+                  ),
+                ),
+                SafeArea(
+                  child: SingleChildScrollView(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(40, 34, 40, 48),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1480),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Dashboard',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .displayMedium
+                                            ?.copyWith(
+                                              fontSize: 36,
+                                              fontWeight: FontWeight.w800,
+                                              letterSpacing: -0.8,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Welcome to your student portal command center.',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.onSurfaceVariant,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 20),
+                                const _DesktopThemePill(),
+                              ],
+                            ),
+                            const SizedBox(height: 34),
+                            _AdminDashboard(
+                              repository: widget.repository,
+                              desktop: true,
+                              showHero: false,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1100),
-            child: session.isAdmin
-                ? _AdminDashboard(repository: repository)
-                : _StudentDashboard(student: session.student!),
+    );
+  }
+}
+
+class _AmbientCircle extends StatelessWidget {
+  const _AmbientCircle({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+    );
+  }
+}
+
+class _DesktopThemePill extends StatelessWidget {
+  const _DesktopThemePill();
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: ThemeController.instance,
+      builder: (context, _) {
+        final controller = ThemeController.instance;
+        return Material(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(18),
+          elevation: 0,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: () => showAppearanceSheet(context),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: Theme.of(context).dividerColor),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.palette_rounded,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Themes',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    controller.palette.label,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AdminSidebar extends StatelessWidget {
+  const _AdminSidebar({
+    required this.username,
+    required this.selectedIndex,
+    required this.onDashboard,
+    required this.onAssessments,
+    required this.onVerification,
+    required this.onFeatureControls,
+    required this.onAnswerSheets,
+    required this.onSlotCollection,
+    required this.onAssessmentAccess,
+    required this.onChangePassword,
+    required this.onAppearance,
+    required this.onLogout,
+  });
+
+  final String username;
+  final int selectedIndex;
+  final VoidCallback onDashboard;
+  final VoidCallback onAssessments;
+  final VoidCallback onVerification;
+  final VoidCallback onFeatureControls;
+  final VoidCallback onAnswerSheets;
+  final VoidCallback onSlotCollection;
+  final VoidCallback onAssessmentAccess;
+  final VoidCallback onChangePassword;
+  final VoidCallback onAppearance;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      ('Dashboard', Icons.dashboard_rounded, onDashboard, 0),
+      ('Assessments', Icons.assignment_rounded, onAssessments, 1),
+      ('Verification Access', Icons.verified_user_rounded, onVerification, 2),
+      ('Feature Controls', Icons.tune_rounded, onFeatureControls, -1),
+      ('Answer Sheets', Icons.assignment_returned_rounded, onAnswerSheets, -1),
+      ('Per-Slot Collection', Icons.fact_check_rounded, onSlotCollection, -1),
+      ('Teacher Access', Icons.assignment_ind_rounded, onAssessmentAccess, -1),
+      ('Change Password', Icons.password_rounded, onChangePassword, -1),
+      ('Themes', Icons.palette_rounded, onAppearance, -1),
+    ];
+
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF173F68), Color(0xFF2E6FA4)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 24, 12, 18),
+          child: Column(
+            children: [
+              Container(
+                width: 82,
+                height: 82,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.24),
+                  ),
+                ),
+                child: ClipOval(
+                  child: Image.asset('assets/cs_logo.jpeg', fit: BoxFit.cover),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'AUST Portal',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Academic control center',
+                style: TextStyle(
+                  color: Color(0xFFCCE5FA),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: items.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 6),
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    final selected = item.$4 == selectedIndex;
+                    return _SidebarItem(
+                      label: item.$1,
+                      icon: item.$2,
+                      selected: selected,
+                      onTap: item.$3,
+                    );
+                  },
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.18),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const CircleAvatar(
+                      radius: 22,
+                      backgroundColor: Color(0xFF67D5EE),
+                      child: Icon(Icons.person_rounded, color: Colors.white),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            username,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const Text(
+                            'Administrator',
+                            style: TextStyle(
+                              color: Color(0xFFCCE5FA),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Logout',
+                      onPressed: onLogout,
+                      icon: const Icon(Icons.logout_rounded),
+                      color: Colors.white,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarItem extends StatelessWidget {
+  const _SidebarItem({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? Colors.white.withValues(alpha: 0.20)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(15),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(15),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            border: selected
+                ? Border.all(color: Colors.white.withValues(alpha: 0.28))
+                : null,
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: Colors.white, size: 21),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -84,9 +578,15 @@ class DashboardPage extends StatelessWidget {
 }
 
 class _AdminDashboard extends StatefulWidget {
-  const _AdminDashboard({required this.repository});
+  const _AdminDashboard({
+    required this.repository,
+    this.desktop = false,
+    this.showHero = true,
+  });
 
   final AppRepository repository;
+  final bool desktop;
+  final bool showHero;
 
   @override
   State<_AdminDashboard> createState() => _AdminDashboardState();
@@ -131,28 +631,31 @@ class _AdminDashboardState extends State<_AdminDashboard> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _AdminHeroCard(
-              studentCount: summary?.studentCount,
-              enrollmentCount: summary?.courseRegistrationCount,
-              teacherCount: teachers.length,
-              activeAssessments: activeAssessments.length,
-            ),
-            const SizedBox(height: 18),
-            _QuickActionsRow(
-              onOpenFeatureControls: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const AdminFeatureControlsPage(),
+            if (widget.showHero) ...[
+              _AdminHeroCard(
+                studentCount: summary?.studentCount,
+                enrollmentCount: summary?.courseRegistrationCount,
+                teacherCount: teachers.length,
+                activeAssessments: activeAssessments.length,
+              ),
+              const SizedBox(height: 18),
+              _QuickActionsRow(
+                repository: widget.repository,
+                onOpenFeatureControls: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AdminFeatureControlsPage(),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 22),
+              const SizedBox(height: 22),
+            ],
             Text(
               'OVERVIEW',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w800,
-                  ),
+                color: scheme.onSurfaceVariant,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 10),
             LayoutBuilder(
@@ -160,12 +663,12 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                 final crossCount = constraints.maxWidth > 900
                     ? 4
                     : constraints.maxWidth > 600
-                        ? 3
-                        : 2;
+                    ? 3
+                    : 2;
                 final spacing = 12.0;
                 final tileWidth =
                     (constraints.maxWidth - spacing * (crossCount - 1)) /
-                        crossCount;
+                    crossCount;
                 return Wrap(
                   spacing: spacing,
                   runSpacing: spacing,
@@ -174,8 +677,9 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                       width: tileWidth,
                       child: _StatCard(
                         title: 'Students',
-                        value:
-                            summary == null ? 'â€¦' : '${summary.studentCount}',
+                        value: summary == null
+                            ? '…'
+                            : '${summary.studentCount}',
                         subtitle: 'Unique rolls in DB',
                         color: AppColors.indigo600,
                         icon: Icons.groups_rounded,
@@ -186,7 +690,7 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                       child: _StatCard(
                         title: 'Enrollments',
                         value: summary == null
-                            ? 'â€¦'
+                            ? '…'
                             : '${summary.courseRegistrationCount}',
                         subtitle: 'Course rows',
                         color: AppColors.teal600,
@@ -247,6 +751,17 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                 );
               },
             ),
+            if (widget.desktop) ...[
+              const SizedBox(height: 24),
+              _QuickActionsRow(
+                repository: widget.repository,
+                onOpenFeatureControls: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AdminFeatureControlsPage(),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             Card(
               child: Padding(
@@ -335,12 +850,16 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Admin login is username admin and password 1234. Student login is roll number and password 1234.',
+                      'Admin login is username admin (the admin password is set '
+                      'by you and is not saved on the device). Student login is '
+                      'roll number and password 1234.',
                     ),
                   ],
                 ),
               ),
             ),
+            const SizedBox(height: 24),
+            const _DeviceAssignmentCard(),
             const SizedBox(height: 24),
             Card(
               child: Padding(
@@ -362,39 +881,48 @@ class _AdminDashboardState extends State<_AdminDashboard> {
                     LayoutBuilder(
                       builder: (context, constraints) {
                         final wide = constraints.maxWidth >= 720;
-                        final fields = [
-                          Expanded(
-                            child: TextField(
-                              controller: _officerNameController,
-                              decoration: const InputDecoration(
-                                labelText: 'Name',
-                                prefixIcon: Icon(Icons.person_outline),
-                              ),
-                            ),
+                        final nameField = TextField(
+                          controller: _officerNameController,
+                          decoration: const InputDecoration(
+                            labelText: 'Name',
+                            prefixIcon: Icon(Icons.person_outline),
                           ),
-                          const SizedBox(width: 12, height: 12),
-                          Expanded(
-                            child: TextField(
-                              controller: _officerRollController,
-                              decoration: const InputDecoration(
-                                labelText: 'Roll no / ID',
-                                prefixIcon: Icon(Icons.badge_outlined),
-                              ),
-                            ),
+                        );
+                        final rollField = TextField(
+                          controller: _officerRollController,
+                          decoration: const InputDecoration(
+                            labelText: 'Roll no / ID',
+                            prefixIcon: Icon(Icons.badge_outlined),
                           ),
-                          const SizedBox(width: 12, height: 12),
-                          FilledButton.icon(
-                            onPressed: _grantAccess,
-                            icon: const Icon(Icons.add_moderator_outlined),
-                            label: const Text('Grant access'),
-                          ),
-                        ];
+                        );
+                        final grantButton = FilledButton.icon(
+                          onPressed: _grantAccess,
+                          icon: const Icon(Icons.add_moderator_outlined),
+                          label: const Text('Grant access'),
+                        );
+                        // Narrow (phone): stack vertically — NO Expanded inside
+                        // a Column in a scroll view (that throws an unbounded
+                        // height error and blanks the whole dashboard).
                         if (wide) {
-                          return Row(children: fields);
+                          return Row(
+                            children: [
+                              Expanded(child: nameField),
+                              const SizedBox(width: 12),
+                              Expanded(child: rollField),
+                              const SizedBox(width: 12),
+                              grantButton,
+                            ],
+                          );
                         }
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: fields,
+                          children: [
+                            nameField,
+                            const SizedBox(height: 12),
+                            rollField,
+                            const SizedBox(height: 12),
+                            grantButton,
+                          ],
                         );
                       },
                     ),
@@ -630,9 +1158,9 @@ class _StudentDashboard extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   student.rollNo,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
                 ),
               ],
             ),
@@ -739,7 +1267,6 @@ class _StudentDashboard extends StatelessWidget {
   }
 }
 
-
 class _InfoBlock extends StatelessWidget {
   const _InfoBlock({required this.label, required this.value});
 
@@ -763,9 +1290,9 @@ class _InfoBlock extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             value.isEmpty ? '-' : value,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
           ),
         ],
       ),
@@ -790,52 +1317,72 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return Container(
+      constraints: const BoxConstraints(minHeight: 158),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Theme.of(context).dividerColor),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF16456E).withValues(alpha: 0.07),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(13),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
                   ),
-                  child: Icon(icon, color: color),
                 ),
-                const Spacer(),
+                const SizedBox(height: 12),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                    fontSize: 34,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.8,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              value,
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
+          ),
+          const SizedBox(width: 12),
+          Container(
+            width: 58,
+            height: 58,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [color.withValues(alpha: 0.72), color],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(18),
             ),
-            const SizedBox(height: 2),
-            Text(
-              title,
-              style: Theme.of(context)
-                  .textTheme
-                  .titleSmall
-                  ?.copyWith(fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
+            child: Icon(icon, color: Colors.white, size: 27),
+          ),
+        ],
       ),
     );
   }
@@ -859,24 +1406,15 @@ class _AdminHeroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            scheme.primary,
-            scheme.primary.withValues(alpha: 0.88),
-            scheme.secondary,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        gradient: PortalColors.heroGradient,
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: scheme.primary.withValues(alpha: 0.25),
+            color: Colors.black.withValues(alpha: 0.18),
             blurRadius: 24,
             offset: const Offset(0, 12),
           ),
@@ -916,7 +1454,7 @@ class _AdminHeroCard extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      'AUST â€¢ Department of Computer Science',
+                      'AUST • Department of Computer Science',
                       style: TextStyle(
                         color: Color(0xFFEFF6FF),
                         fontWeight: FontWeight.w600,
@@ -934,7 +1472,7 @@ class _AdminHeroCard extends StatelessWidget {
               Expanded(
                 child: _HeroStat(
                   label: 'Students',
-                  value: studentCount == null ? 'â€¦' : '$studentCount',
+                  value: studentCount == null ? '…' : '$studentCount',
                   icon: Icons.groups_rounded,
                 ),
               ),
@@ -1009,8 +1547,12 @@ class _HeroStat extends StatelessWidget {
 }
 
 class _QuickActionsRow extends StatelessWidget {
-  const _QuickActionsRow({required this.onOpenFeatureControls});
+  const _QuickActionsRow({
+    required this.onOpenFeatureControls,
+    required this.repository,
+  });
   final VoidCallback onOpenFeatureControls;
+  final AppRepository repository;
 
   @override
   Widget build(BuildContext context) {
@@ -1021,10 +1563,10 @@ class _QuickActionsRow extends StatelessWidget {
         Text(
           'QUICK ACTIONS',
           style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-                letterSpacing: 1.2,
-                fontWeight: FontWeight.w800,
-              ),
+            color: scheme.onSurfaceVariant,
+            letterSpacing: 1.2,
+            fontWeight: FontWeight.w800,
+          ),
         ),
         const SizedBox(height: 10),
         LayoutBuilder(
@@ -1033,7 +1575,7 @@ class _QuickActionsRow extends StatelessWidget {
             const spacing = 10.0;
             final tileWidth =
                 (constraints.maxWidth - spacing * (crossCount - 1)) /
-                    crossCount;
+                crossCount;
             final tiles = <_QuickActionData>[
               _QuickActionData(
                 title: 'Feature Controls',
@@ -1042,14 +1584,116 @@ class _QuickActionsRow extends StatelessWidget {
                 onTap: onOpenFeatureControls,
               ),
               _QuickActionData(
-                title: 'Manage Verifiers',
-                icon: Icons.verified_user_outlined,
-                color: AppColors.teal600,
-                onTap: () {},
+                title: 'Data Share',
+                icon: Icons.sync_alt_rounded,
+                color: AppColors.amber600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => AdminDataSyncPage(repository: repository),
+                  ),
+                ),
               ),
               _QuickActionData(
-                title: 'Enrollment Sync',
-                icon: Icons.refresh_rounded,
+                title: 'FYP Groups',
+                icon: Icons.school_outlined,
+                color: AppColors.violet600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const FypAdminGroupsPage(),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'AUST Connect',
+                icon: Icons.forum_outlined,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ConnectHomePage(
+                      identity: ConnectIdentity(
+                        name: LoginStore.instance.currentUserName.trim().isEmpty
+                            ? 'Admin'
+                            : LoginStore.instance.currentUserName.trim(),
+                        role: 'admin',
+                        id: 'admin',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'AUST Event',
+                icon: Icons.celebration_outlined,
+                color: AppColors.violet600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => EventHomePage(
+                      identity: ConnectIdentity(
+                        name: LoginStore.instance.currentUserName.trim().isEmpty
+                            ? 'Admin'
+                            : LoginStore.instance.currentUserName.trim(),
+                        role: 'admin',
+                        id: 'admin',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Answer Sheets',
+                icon: Icons.assignment_returned_outlined,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const AnswerSheetTrackerPage(),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Per-Slot Collection',
+                icon: Icons.fact_check_outlined,
+                color: AppColors.indigo600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const SlotCollectionPage(),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Teacher Access',
+                icon: Icons.assignment_ind_outlined,
+                color: AppColors.violet600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        AssessmentAccessPage(repository: repository),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Change Password',
+                icon: Icons.password_outlined,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ChangePasswordPage(repository: repository),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Manage Passwords',
+                icon: Icons.lock_reset_rounded,
+                color: AppColors.teal600,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        AdminPasswordManagerPage(repository: repository),
+                  ),
+                ),
+              ),
+              _QuickActionData(
+                title: 'Manage Verifiers',
+                icon: Icons.verified_user_outlined,
                 color: AppColors.amber600,
                 onTap: () {},
               ),
@@ -1137,5 +1781,214 @@ class _QuickActionCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Admin control: assign this device to one or more people, change or remove an
+/// assignment, or release it entirely.
+class _DeviceAssignmentCard extends StatelessWidget {
+  const _DeviceAssignmentCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: DeviceBindingService.instance,
+      builder: (context, _) {
+        final b = DeviceBindingService.instance;
+        final entries = b.entries;
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Device assignment',
+                        style: Theme.of(context).textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _addPerson(context),
+                      icon: const Icon(Icons.person_add_alt_1_outlined),
+                      label: const Text('Add person'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: b.allowAll,
+                  onChanged: (v) =>
+                      DeviceBindingService.instance.setAllowAll(v),
+                  title: const Text(
+                    'Allowed for ALL (students + teachers + admin)',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text(
+                    'Open device: anyone can sign in and the first login never '
+                    'claims it. Turn off to use the assignments below.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  b.allowAll
+                      ? 'Everyone can sign in on this device. Assignments '
+                            'below are kept but not enforced while this is on.'
+                      : entries.isEmpty
+                      ? 'Not assigned yet. The first student or teacher who logs '
+                            'in will claim this device — or add people below to '
+                            'allow several.'
+                      : 'Only these people (and Admin) can sign in on this '
+                            'device:',
+                ),
+                const SizedBox(height: 6),
+                for (final e in entries)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    leading: Icon(
+                      e.role == 'faculty'
+                          ? Icons.co_present_outlined
+                          : Icons.school_outlined,
+                    ),
+                    title: Text(
+                      e.label,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      '${e.role == 'faculty' ? 'Teacher' : 'Student'}  •  ${e.key}',
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close_rounded),
+                      tooltip: 'Remove',
+                      onPressed: () =>
+                          DeviceBindingService.instance.removePerson(e.key),
+                    ),
+                  ),
+                if (entries.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final ok = await _confirm(
+                        context,
+                        'Release this device?',
+                        'All assignments are cleared. The next student or '
+                            'teacher to log in will claim it.',
+                      );
+                      if (ok) await DeviceBindingService.instance.release();
+                    },
+                    icon: const Icon(Icons.lock_open_outlined),
+                    label: const Text('Release (clear all)'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _addPerson(BuildContext context) async {
+    var role = 'student';
+    final keyCtrl = TextEditingController();
+    final labelCtrl = TextEditingController();
+    final add = await showDialog<bool>(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setLocal) => AlertDialog(
+          title: const Text('Assign a person'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: role,
+                decoration: const InputDecoration(labelText: 'Role'),
+                items: const [
+                  DropdownMenuItem(value: 'student', child: Text('Student')),
+                  DropdownMenuItem(value: 'faculty', child: Text('Teacher')),
+                ],
+                onChanged: (v) => setLocal(() => role = v ?? 'student'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: keyCtrl,
+                decoration: InputDecoration(
+                  labelText: role == 'faculty'
+                      ? 'Teacher email / id'
+                      : 'Roll number',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: labelCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Display name (optional)',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (add == true) {
+      final ok = await DeviceBindingService.instance.addPerson(
+        role: role,
+        key: keyCtrl.text,
+        label: labelCtrl.text,
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ok
+                  ? 'Person assigned to this device.'
+                  : 'Enter a valid roll/id (or it is already assigned).',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<bool> _confirm(
+    BuildContext context,
+    String title,
+    String body,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
   }
 }

@@ -148,7 +148,7 @@ class _DayBlock extends StatelessWidget {
                 ),
                 child: Text(
                   _dayName(),
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w800,
                     color: PortalColors.brandBlue,
                   ),

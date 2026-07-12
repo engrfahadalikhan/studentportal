@@ -35,6 +35,9 @@ class FeatureVisibilityService extends ChangeNotifier {
 
   static bool _defaultOnForTeacher(FeatureMeta meta) {
     if (meta.audience == FeatureAudience.student) return false;
+    // Tier 0 = teacher dashboard areas (modules section, Assess, Live,
+    // Results). These stay OFF until an admin explicitly enables them.
+    if (meta.tier == 0) return false;
     return meta.tier <= 1;
   }
 

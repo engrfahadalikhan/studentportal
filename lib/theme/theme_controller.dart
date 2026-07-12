@@ -1,16 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// User-controllable theme mode (system / light / dark). Persists to
-/// SharedPreferences so the choice survives restart.
+import 'app_palettes.dart';
+
+/// User-controllable appearance: light/dark/system mode + the active color
+/// palette. Both persist to SharedPreferences so the choice survives restart.
 class ThemeController extends ChangeNotifier {
   ThemeController._();
   static final ThemeController instance = ThemeController._();
 
   static const _prefsKey = 'theme_mode_v1';
+  // Bumped to v2 so existing installs drop their old saved palette and pick up
+  // the new default (Gold) until the user chooses one explicitly.
+  static const _paletteKey = 'theme_palette_v2';
 
   ThemeMode _mode = ThemeMode.system;
   ThemeMode get mode => _mode;
+
+  AppPalette _palette = kAppPalettes.first;
+  AppPalette get palette => _palette;
 
   bool _loaded = false;
 
@@ -28,6 +36,7 @@ class ThemeController extends ChangeNotifier {
       default:
         _mode = ThemeMode.system;
     }
+    _palette = paletteById(prefs.getString(_paletteKey));
     _loaded = true;
     notifyListeners();
   }
@@ -38,6 +47,14 @@ class ThemeController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKey, mode.name);
+  }
+
+  Future<void> setPalette(AppPalette palette) async {
+    if (_palette.id == palette.id) return;
+    _palette = palette;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_paletteKey, palette.id);
   }
 
   String get label {

@@ -9,6 +9,7 @@ import '../ui/student_portal_shell.dart';
 import 'assessment_models.dart';
 import 'paper_generator_models.dart';
 import 'paper_generator_pdf_service.dart';
+import 'quiz_text_parser.dart';
 
 class PaperGeneratorScreen extends StatefulWidget {
   const PaperGeneratorScreen({
@@ -17,12 +18,17 @@ class PaperGeneratorScreen extends StatefulWidget {
     required this.teacher,
     required this.onAssessmentCreated,
     this.initialCourseId,
+    this.assessmentType = AssessmentType.examPaper,
   });
 
   final AppRepository repository;
   final AssessmentTeacher teacher;
   final ValueChanged<Assessment> onAssessmentCreated;
   final String? initialCourseId;
+
+  /// Which kind of paper this generator builds (quiz / assignment / exam).
+  /// Drives the saved type, default title, and instruction text.
+  final AssessmentType assessmentType;
 
   @override
   State<PaperGeneratorScreen> createState() => _PaperGeneratorScreenState();
@@ -31,6 +37,7 @@ class PaperGeneratorScreen extends StatefulWidget {
 class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _teacherController;
+  final _nameController = TextEditingController();
   final _subjectController = TextEditingController();
   final _dateTimeController = TextEditingController();
   final _classController = TextEditingController();
@@ -67,6 +74,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
   @override
   void dispose() {
     _teacherController.dispose();
+    _nameController.dispose();
     _subjectController.dispose();
     _dateTimeController.dispose();
     _classController.dispose();
@@ -120,6 +128,103 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
       question.dispose();
     }
     _questionControllers.removeRange(count, _questionControllers.length);
+  }
+
+  // ---- Paste a whole quiz from WhatsApp / any text -------------------------
+
+  Future<void> _pasteQuizDialog() async {
+    final ctrl = TextEditingController();
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Paste quiz text'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Paste the whole quiz (from WhatsApp or anywhere). Number each '
+                'question (1. 2. …) and label options (A) B) … or a. b. …). '
+                'Mark the correct option with * or write "Answer: B".',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: ctrl,
+                minLines: 6,
+                maxLines: 16,
+                autofocus: true,
+                keyboardType: TextInputType.multiline,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: '1. What is 2 + 2?\nA) 3\nB) 4*\nC) 5\nD) 6',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Parse & add'),
+          ),
+        ],
+      ),
+    );
+    final text = ctrl.text;
+    ctrl.dispose();
+    if (go != true) return;
+    final parsed = parseQuizText(text);
+    if (parsed.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not find any questions in the pasted text.'),
+          ),
+        );
+      }
+      return;
+    }
+    _applyParsedQuestions(parsed);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Added ${parsed.length} question(s). Review the marks and the '
+            'correct option for each.',
+          ),
+        ),
+      );
+    }
+  }
+
+  void _applyParsedQuestions(List<ParsedQuizQuestion> qs) {
+    final list = qs.take(50).toList();
+    setState(() {
+      _questionCount = list.length;
+      _syncQuestionCount(list.length);
+      for (var i = 0; i < list.length; i++) {
+        final c = _questionControllers[i];
+        c.numberController.text = '${i + 1}';
+        c.textController.text = list[i].text;
+        if (c.marksController.text.trim().isEmpty) {
+          c.marksController.text = '1';
+        }
+        c.hasSubparts = false;
+        c.syncOptionsCount(list[i].options.length);
+        for (var j = 0; j < list[i].options.length; j++) {
+          c.optionControllers[j].text = list[i].options[j];
+        }
+        c.correctOptionIndex = list[i].correctIndex;
+      }
+      _generatedPdf = null;
+    });
   }
 
   Future<void> _pickDateTime() async {
@@ -341,28 +446,46 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
     );
     final durationMinutes = summedTimeMinutes > 0 ? summedTimeMinutes : 60;
 
-    final titleParts = [
-      _subjectController.text.trim(),
-      if (_dateTimeController.text.trim().isNotEmpty)
-        _dateTimeController.text.trim(),
-    ].where((part) => part.isNotEmpty).toList();
-    final title = titleParts.isEmpty
-        ? 'Generated assessment'
-        : titleParts.join(' • ');
+    // The teacher's chosen name is the assessment title (mandatory).
+    final name = _nameController.text.trim();
+    final subject = _subjectController.text.trim();
+    final title = name.isEmpty
+        ? (subject.isEmpty
+              ? 'Generated ${widget.assessmentType.label.toLowerCase()}'
+              : subject)
+        : (subject.isEmpty ? name : '$name — $subject');
 
     final extraClasses = _selectedCourses.length > 1
         ? '\nCovers classes: ${_classController.text.trim()}.'
         : '';
 
+    // Carry EVERY selected section/semester/program (comma-separated, distinct)
+    // so students of ALL chosen sections can open the paper — not just the
+    // first one. The student-side enrolment check splits these into tokens.
+    String joinDistinct(Iterable<String> values) => values
+        .map((v) => v.trim())
+        .where((v) => v.isNotEmpty)
+        .toSet()
+        .join(',');
+    final sections = joinDistinct(_selectedCourses.map((c) => c.section));
+    final semesters = joinDistinct(_selectedCourses.map((c) => c.semester));
+    final programs = joinDistinct(_selectedCourses.map((c) => c.program));
+
     final assessment = widget.repository.createAssessment(
       title: title,
-      type: AssessmentType.examPaper,
+      type: widget.assessmentType,
       course: primaryCourse,
       durationMinutes: durationMinutes,
       instructions:
-          'Question interpretation is part of the exam. Using unfair means will result in paper cancellation. For each question, read the respective instructions very carefully.$extraClasses',
+          '${_defaultInstructions(widget.assessmentType)}$extraClasses',
       questions: assessmentQuestions,
-      program: primaryCourse.program,
+      program: programs.isEmpty ? primaryCourse.program : programs,
+      semester: semesters,
+      section: sections,
+      expectedStudents: _selectedCourses.fold<int>(
+        0,
+        (sum, c) => sum + c.enrolledStudents,
+      ),
     );
 
     if (!mounted) {
@@ -374,6 +497,17 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
     });
 
     widget.onAssessmentCreated(assessment);
+  }
+
+  String _defaultInstructions(AssessmentType type) {
+    switch (type) {
+      case AssessmentType.quiz:
+        return 'Attempt every question within the time shown. The quiz auto-submits when the timer ends.';
+      case AssessmentType.assignment:
+        return 'Read each task carefully. Submit your answers / file before the due date.';
+      case AssessmentType.examPaper:
+        return 'Question interpretation is part of the exam. Using unfair means will result in paper cancellation. For each question, read the respective instructions very carefully.';
+    }
   }
 
   @override
@@ -446,7 +580,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
                     color: PortalColors.softBlue,
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.picture_as_pdf_rounded,
                     color: PortalColors.brandBlue,
                   ),
@@ -476,6 +610,23 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
             ),
             const SizedBox(height: 20),
             _sectionTitle('Paper Details'),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _nameController,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Assessment name *',
+                hintText: 'e.g. Quiz 1, Mid-term, Assignment 2',
+                prefixIcon: Icon(Icons.drive_file_rename_outline),
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Give this assessment a name.';
+                }
+                return null;
+              },
+              onChanged: (_) => setState(() => _generatedPdf = null),
+            ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _teacherController,
@@ -532,14 +683,23 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
             const SizedBox(height: 24),
             _sectionTitle('Questions Setup'),
             const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _pasteQuizDialog,
+                icon: const Icon(Icons.content_paste_go_rounded),
+                label: const Text('Paste quiz from WhatsApp / text'),
+              ),
+            ),
+            const SizedBox(height: 12),
             DropdownButtonFormField<int>(
-              initialValue: _questionCount,
+              initialValue: _questionCount > 50 ? 50 : _questionCount,
               decoration: const InputDecoration(
                 labelText: 'Total Number of Questions',
                 prefixIcon: Icon(Icons.format_list_numbered_rounded),
               ),
               items: List.generate(
-                15,
+                50,
                 (index) => DropdownMenuItem(
                   value: index + 1,
                   child: Text('${index + 1}'),
@@ -719,7 +879,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
                         : _generatedPdfIsDraft
                         ? 'Draft ready'
                         : 'Ready',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w700,
                       color: PortalColors.brandBlue,
                     ),
@@ -768,7 +928,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
             Container(
               width: 78,
               height: 78,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: LinearGradient(
                   colors: [PortalColors.brandBlue, PortalColors.avatarTeal],
@@ -822,7 +982,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
               Container(
                 width: 30,
                 height: 30,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: PortalColors.brandBlue,
                 ),
@@ -1111,7 +1271,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
         children: [
           Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.list_alt_outlined,
                 size: 18,
                 color: PortalColors.brandBlue,
@@ -1119,7 +1279,7 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
-                  'Possible answers (for MCQ-style)',
+                  'Possible answers — tap ○ to mark correct',
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
                     color: PortalColors.textPrimary,
@@ -1168,17 +1328,52 @@ class _PaperGeneratorScreenState extends State<PaperGeneratorScreen> {
               optionIndex < question.optionControllers.length;
               optionIndex++
             ) ...[
-              TextFormField(
-                controller: question.optionControllers[optionIndex],
-                decoration: InputDecoration(
-                  labelText:
-                      'Answer ${_optionLetter(optionIndex)}',
-                  prefixIcon: const Icon(Icons.check_circle_outline),
-                ),
-                onChanged: (_) => setState(() => _generatedPdf = null),
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Mark as correct answer',
+                    onPressed: () {
+                      setState(() {
+                        question.correctOptionIndex =
+                            question.correctOptionIndex == optionIndex
+                            ? null
+                            : optionIndex;
+                        _generatedPdf = null;
+                      });
+                    },
+                    icon: Icon(
+                      question.correctOptionIndex == optionIndex
+                          ? Icons.check_circle_rounded
+                          : Icons.radio_button_unchecked,
+                      color: question.correctOptionIndex == optionIndex
+                          ? const Color(0xFF0F766E)
+                          : PortalColors.subtleText,
+                    ),
+                  ),
+                  Expanded(
+                    child: TextFormField(
+                      controller: question.optionControllers[optionIndex],
+                      decoration: InputDecoration(
+                        labelText: 'Answer ${_optionLetter(optionIndex)}',
+                      ),
+                      onChanged: (_) => setState(() => _generatedPdf = null),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
             ],
+            if (question.correctOptionIndex == null)
+              const Padding(
+                padding: EdgeInsets.only(top: 2, left: 4),
+                child: Text(
+                  'No correct answer marked → this question will need manual grading.',
+                  style: TextStyle(
+                    color: PortalColors.subtleText,
+                    fontSize: 11.5,
+                  ),
+                ),
+              ),
           ],
         ],
       ),
@@ -1451,6 +1646,10 @@ class _QuestionInputControllers {
   QuestionImagePlacement imagePlacement = QuestionImagePlacement.center;
   SubpartPlacement subpartPlacement = SubpartPlacement.indent;
 
+  /// Index of the option the teacher marked correct (for auto-graded quizzes).
+  /// Null = not set / not objective.
+  int? correctOptionIndex;
+
   int get timeMinutesValue =>
       int.tryParse(timeController.text.trim()) ?? 0;
 
@@ -1503,6 +1702,19 @@ class _QuestionInputControllers {
         : paperData.text;
     final options = paperData.options;
 
+    // Resolve the correct-answer text from the marked option, if any. This is
+    // what lets the quiz auto-grade on submit.
+    String? correctAnswer;
+    final markedIndex = correctOptionIndex;
+    if (markedIndex != null &&
+        markedIndex >= 0 &&
+        markedIndex < optionControllers.length) {
+      final marked = optionControllers[markedIndex].text.trim();
+      if (marked.isNotEmpty) {
+        correctAnswer = marked;
+      }
+    }
+
     return AssessmentQuestion(
       id: id,
       type: options.isNotEmpty
@@ -1511,6 +1723,7 @@ class _QuestionInputControllers {
       question: text.isEmpty ? 'Generated question' : text,
       marks: marksValue == 0 ? 1 : marksValue,
       options: options,
+      correctAnswer: correctAnswer,
       timeMinutes: paperData.timeMinutes,
     );
   }
@@ -1530,6 +1743,10 @@ class _QuestionInputControllers {
       controller.dispose();
     }
     optionControllers.removeRange(count, optionControllers.length);
+    // Clear the correct-answer marker if it now points past the list.
+    if (correctOptionIndex != null && correctOptionIndex! >= count) {
+      correctOptionIndex = null;
+    }
   }
 
   int get subpartMarksTotal {

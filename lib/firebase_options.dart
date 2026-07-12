@@ -53,11 +53,10 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyA9z47LknaeTYQG7JBFw0ntL_COB9NH7V0',
-    appId: '1:348949617917:android:d49f1dd988c2a91f74f294',
-    messagingSenderId: '348949617917',
-    projectId: 'fahad1-bbd65',
-    databaseURL: 'https://fahad1-bbd65-default-rtdb.firebaseio.com',
-    storageBucket: 'fahad1-bbd65.firebasestorage.app',
+    apiKey: 'AIzaSyDyf9pt9HQfsQxh7FPOYb8jKa9NXwHqwPs',
+    appId: '1:989039234:android:29e44d067bb041cce5c29b',
+    messagingSenderId: '989039234',
+    projectId: 'studentportal-36d0a',
+    storageBucket: 'studentportal-36d0a.firebasestorage.app',
   );
 }

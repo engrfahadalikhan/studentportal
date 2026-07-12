@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../assessment/assessment_models.dart';
 import '../features/feature_catalog.dart';
@@ -8,6 +9,7 @@ import '../fyp/fyp_teacher_section.dart';
 import '../internships/internships_section.dart';
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
+import '../ui/student_portal_shell.dart';
 import 'grades_module.dart';
 import 'modules_common.dart';
 import 'tier1_modules.dart';
@@ -100,7 +102,7 @@ class ModuleRouter {
                 title: 'Digital Student ID',
                 description: 'Student-only module.',
                 icon: Icons.badge_outlined,
-                color: Color(0xFF2948B7),
+                color: Color(0xFF8A6E16),
               );
       case FeatureKey.documentCenter:
         return (_) => const ModuleComingSoonScreen(
@@ -160,7 +162,7 @@ class ModuleRouter {
               description:
                   'Hostel room allocation, mess menu, bus routes, transport pass renewal.',
               icon: Icons.directions_bus_outlined,
-              color: Color(0xFF2948B7),
+              color: Color(0xFF8A6E16),
               bulletPoints: [
                 'Hostel block / room / roommate listing',
                 'Bus routes with live stop ETA',
@@ -198,7 +200,7 @@ class ModuleRouter {
               title: 'Messages',
               description: 'Direct chat between student, teacher and admin.',
               icon: Icons.chat_bubble_outline,
-              color: Color(0xFF2948B7),
+              color: Color(0xFF8A6E16),
               bulletPoints: [
                 '1:1 threads with read receipts',
                 'Threads scoped to a course or FYP group',
@@ -244,6 +246,19 @@ class ModuleRouter {
                 'Mentor matchmaking with alumni',
               ],
             );
+      // These are admin gates for teacher dashboard areas, not openable
+      // module screens — they never reach the modules grid / router.
+      case FeatureKey.teacherModules:
+      case FeatureKey.teacherAssess:
+      case FeatureKey.teacherLive:
+      case FeatureKey.teacherResults:
+        return (_) => const ModuleComingSoonScreen(
+              title: 'Teacher area',
+              description:
+                  'This area is controlled from the teacher dashboard tabs.',
+              icon: Icons.dashboard_customize_outlined,
+              color: Color(0xFF4F46E5),
+            );
     }
   }
 
@@ -258,7 +273,7 @@ class ModuleRouter {
       description:
           'Teacher-side grade compilation. You can already enter and view per-assessment marks under Live / Results inside the assessment app.',
       icon: Icons.grade_outlined,
-      color: Color(0xFF2948B7),
+      color: Color(0xFF8A6E16),
       bulletPoints: [
         'Bulk import marks from CSV',
         'Per-course gradebook with weighted aggregation',
@@ -288,11 +303,7 @@ class _DigitalIdCardScreen extends StatelessWidget {
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(22),
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF12343B), Color(0xFF2948B7)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: PortalColors.heroGradient,
                 boxShadow: const [
                   BoxShadow(
                     color: Color(0x441F2A44),
@@ -354,10 +365,13 @@ class _DigitalIdCardScreen extends StatelessWidget {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(14),
                     ),
-                    child: const Icon(
-                      Icons.qr_code_2_rounded,
-                      size: 90,
-                      color: Color(0xFF12343B),
+                    // Real QR (roll number) — the teacher's live hall scanner
+                    // reads this to mark the student present.
+                    child: QrImageView(
+                      data: student.rollNo,
+                      version: QrVersions.auto,
+                      size: 120,
+                      backgroundColor: Colors.white,
                     ),
                   ),
                   const SizedBox(height: 6),

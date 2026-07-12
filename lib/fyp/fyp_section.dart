@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
@@ -5,8 +7,10 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/student_record.dart';
 import '../services/app_repository.dart';
+import '../services/cloud_sync_service.dart';
 import '../ui/student_portal_shell.dart';
 import 'fyp_allocation_pdf.dart';
+import 'fyp_groups_tabs.dart';
 import 'fyp_meeting_pdf.dart';
 import 'fyp_models.dart';
 import 'fyp_pdf_service.dart';
@@ -22,7 +26,7 @@ import 'fyp_srs_pdf.dart';
 /// 3. Allocation      (form #3)   — student fills, faculty signs in teacher app
 /// 4. Proposal        (form #5)   — proposal cover sheet metadata + QR
 /// 5. Meeting Log     (form #14)  — students fill Section 1, supervisor fills 2
-/// 6. Evaluations     (forms #8 + #11) — read-only marks once examiners enter
+/// 6. Evaluations     (forms #8 + #11) — student-safe status note only
 class FypSection extends StatefulWidget {
   const FypSection({
     super.key,
@@ -42,12 +46,25 @@ class FypSection extends StatefulWidget {
 class _FypSectionState extends State<FypSection>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
+  late final Future<List<StudentRecord>> _studentChoicesFuture;
   final FypRepository _fypRepository = FypRepository.instance;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
+    // Group members can be ANY eligible final-year student — not just the
+    // student's own section (classmatesFor filtered by program+semester+
+    // section, so the dropdown only showed a handful of section-mates).
+    _studentChoicesFuture = Future.value(fypEligibleStudents());
+    unawaited(_refreshFyp(force: false));
+  }
+
+  Future<void> _refreshFyp({bool force = true}) {
+    return CloudSyncService.instance.pullFypWorkspace(
+      force: force,
+      includeEvaluations: false,
+    );
   }
 
   @override
@@ -61,61 +78,96 @@ class _FypSectionState extends State<FypSection>
     return AnimatedBuilder(
       animation: _fypRepository,
       builder: (context, _) {
-        return Scaffold(
-          backgroundColor: PortalColors.pageBackground,
-          appBar: AppBar(
-            title: const Text('Final Year Project'),
-            bottom: TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              labelColor: PortalColors.brandBlue,
-              unselectedLabelColor: PortalColors.subtleText,
-              indicatorColor: PortalColors.brandBlue,
-              tabs: const [
-                Tab(text: 'Group Form'),
-                Tab(text: 'Browse Ideas'),
-                Tab(text: 'Allocation'),
-                Tab(text: 'Proposal'),
-                Tab(text: 'Meeting Log'),
-                Tab(text: 'Evaluations'),
-              ],
-            ),
-          ),
-          body: TabBarView(
-            controller: _tabController,
-            children: [
-              _GroupSubmissionTab(
-                student: widget.student,
-                teacherNames: _teacherNames(),
-                fypRepository: _fypRepository,
-                initialPhase: widget.initialPhase,
+        return FutureBuilder<List<StudentRecord>>(
+          future: _studentChoicesFuture,
+          builder: (context, snapshot) {
+            final studentChoices = _normalizedStudentChoices(
+              snapshot.data ?? [widget.student],
+            );
+            return Scaffold(
+              backgroundColor: PortalColors.pageBackground,
+              appBar: AppBar(
+                title: const Text('Final Year Project'),
+                actions: [
+                  IconButton(
+                    tooltip: 'Refresh FYP',
+                    onPressed: () => unawaited(_refreshFyp()),
+                    icon: const Icon(Icons.refresh_rounded),
+                  ),
+                ],
+                bottom: TabBar(
+                  controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  tabs: const [
+                    Tab(text: 'My Group'),
+                    Tab(text: 'Group Form'),
+                    Tab(text: 'Browse Ideas'),
+                    Tab(text: 'Allocation'),
+                    Tab(text: 'Proposal'),
+                    Tab(text: 'Meeting Log'),
+                    Tab(text: 'Evaluations'),
+                  ],
+                ),
               ),
-              _BrowseIdeasTab(fypRepository: _fypRepository),
-              _AllocationTab(
-                student: widget.student,
-                teacherNames: _teacherNames(),
-                fypRepository: _fypRepository,
+              body: TabBarView(
+                controller: _tabController,
+                children: [
+                  FypStudentGroupTab(
+                    student: widget.student,
+                    teacherNames: _teacherNames(),
+                    studentChoices: studentChoices,
+                  ),
+                  _GroupSubmissionTab(
+                    student: widget.student,
+                    teacherNames: _teacherNames(),
+                    fypRepository: _fypRepository,
+                    initialPhase: widget.initialPhase,
+                    studentChoices: studentChoices,
+                  ),
+                  _BrowseIdeasTab(fypRepository: _fypRepository),
+                  _AllocationTab(
+                    student: widget.student,
+                    teacherNames: _teacherNames(),
+                    fypRepository: _fypRepository,
+                    studentChoices: studentChoices,
+                  ),
+                  _ProposalTab(
+                    student: widget.student,
+                    teacherNames: _teacherNames(),
+                    fypRepository: _fypRepository,
+                    studentChoices: studentChoices,
+                  ),
+                  _MeetingLogTab(
+                    student: widget.student,
+                    teacherNames: _teacherNames(),
+                    fypRepository: _fypRepository,
+                    studentChoices: studentChoices,
+                  ),
+                  const _EvaluationsTab(),
+                ],
               ),
-              _ProposalTab(
-                student: widget.student,
-                teacherNames: _teacherNames(),
-                fypRepository: _fypRepository,
-              ),
-              _MeetingLogTab(
-                student: widget.student,
-                teacherNames: _teacherNames(),
-                fypRepository: _fypRepository,
-              ),
-              _EvaluationsTab(
-                student: widget.student,
-                fypRepository: _fypRepository,
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
+  }
+
+  List<StudentRecord> _normalizedStudentChoices(List<StudentRecord> records) {
+    final byRoll = <String, StudentRecord>{
+      for (final record in records)
+        if (record.rollNo.trim().isNotEmpty)
+          record.rollNo.trim().toLowerCase(): record,
+    };
+    byRoll.putIfAbsent(widget.student.rollNo.trim().toLowerCase(), () {
+      return widget.student;
+    });
+    final list = byRoll.values.toList()
+      ..sort(
+        (a, b) => a.rollNo.toLowerCase().compareTo(b.rollNo.toLowerCase()),
+      );
+    return list;
   }
 
   List<String> _teacherNames() {
@@ -134,12 +186,14 @@ class _GroupSubmissionTab extends StatelessWidget {
     required this.teacherNames,
     required this.fypRepository,
     required this.initialPhase,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
   final FypPhase initialPhase;
+  final List<StudentRecord> studentChoices;
 
   @override
   Widget build(BuildContext context) {
@@ -194,12 +248,16 @@ class _GroupSubmissionTab extends StatelessWidget {
           student: student,
           teacherNames: teacherNames,
           fypRepository: fypRepository,
+          studentChoices: studentChoices,
         ),
       ),
     );
     if (context.mounted && created != null) {
-      await _showQrSheet(context, created.qrCode,
-          title: '${created.phase.label} — ${created.id}');
+      await _showQrSheet(
+        context,
+        created.qrCode,
+        title: '${created.phase.label} — ${created.id}',
+      );
     }
   }
 }
@@ -211,8 +269,9 @@ class _SubmissionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dateLabel =
-        DateFormat('dd MMM yyyy HH:mm').format(submission.submittedAt);
+    final dateLabel = DateFormat(
+      'dd MMM yyyy HH:mm',
+    ).format(submission.submittedAt);
     return _RecordCard(
       borderColor: PortalColors.purpleBorder,
       header: Row(
@@ -248,12 +307,15 @@ class _SubmissionCard extends StatelessWidget {
             style: const TextStyle(fontSize: 12.5),
           ),
           if (submission.preferredSupervisor.isNotEmpty)
-            Text('Preferred supervisor: ${submission.preferredSupervisor}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Preferred supervisor: ${submission.preferredSupervisor}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           if (submission.preferredCoSupervisor.isNotEmpty)
             Text(
-                'Preferred co-supervisor: ${submission.preferredCoSupervisor}',
-                style: const TextStyle(fontSize: 12.5)),
+              'Preferred co-supervisor: ${submission.preferredCoSupervisor}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
         ],
       ),
       actions: [
@@ -403,11 +465,13 @@ class _AllocationTab extends StatelessWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   Widget build(BuildContext context) {
@@ -452,12 +516,16 @@ class _AllocationTab extends StatelessWidget {
           student: student,
           teacherNames: teacherNames,
           fypRepository: fypRepository,
+          studentChoices: studentChoices,
         ),
       ),
     );
     if (context.mounted && created != null) {
-      await _showQrSheet(context, created.qrCode,
-          title: 'Allocation ${created.id}');
+      await _showQrSheet(
+        context,
+        created.qrCode,
+        title: 'Allocation ${created.id}',
+      );
     }
   }
 }
@@ -491,11 +559,15 @@ class _AllocationCard extends StatelessWidget {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Supervisor: ${allocation.supervisorName}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Supervisor: ${allocation.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           if (allocation.coSupervisorName.isNotEmpty)
-            Text('Co-supervisor: ${allocation.coSupervisorName}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Co-supervisor: ${allocation.coSupervisorName}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           Text(
             'Members: ${allocation.members.map((m) => m.rollNo).join(', ')}',
             style: const TextStyle(fontSize: 12.5),
@@ -504,8 +576,8 @@ class _AllocationCard extends StatelessWidget {
       ),
       actions: [
         OutlinedButton.icon(
-          onPressed: () => _showQrSheet(context, allocation.qrCode,
-              title: allocation.id),
+          onPressed: () =>
+              _showQrSheet(context, allocation.qrCode, title: allocation.id),
           icon: const Icon(Icons.qr_code_2_outlined),
           label: const Text('Show QR'),
         ),
@@ -533,11 +605,13 @@ class _ProposalTab extends StatelessWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   Widget build(BuildContext context) {
@@ -548,7 +622,7 @@ class _ProposalTab extends StatelessWidget {
       children: [
         _IntroCard(
           icon: Icons.description_outlined,
-          color: const Color(0xFF2948B7),
+          color: const Color(0xFF8A6E16),
           title: 'Proposal cover sheet & SRS',
           message:
               'The proposal cover sheet captures project registration + plagiarism declaration. The SRS captures functional and non-functional requirements following the IEEE template.',
@@ -604,12 +678,16 @@ class _ProposalTab extends StatelessWidget {
           student: student,
           teacherNames: teacherNames,
           fypRepository: fypRepository,
+          studentChoices: studentChoices,
         ),
       ),
     );
     if (context.mounted && created != null) {
-      await _showQrSheet(context, created.qrCode,
-          title: 'Proposal ${created.id}');
+      await _showQrSheet(
+        context,
+        created.qrCode,
+        title: 'Proposal ${created.id}',
+      );
     }
   }
 
@@ -620,12 +698,12 @@ class _ProposalTab extends StatelessWidget {
           student: student,
           teacherNames: teacherNames,
           fypRepository: fypRepository,
+          studentChoices: studentChoices,
         ),
       ),
     );
     if (context.mounted && created != null) {
-      await _showQrSheet(context, created.qrCode,
-          title: 'SRS ${created.id}');
+      await _showQrSheet(context, created.qrCode, title: 'SRS ${created.id}');
     }
   }
 }
@@ -658,8 +736,10 @@ class _SrsCard extends StatelessWidget {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Supervisor: ${srs.supervisorName}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Supervisor: ${srs.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           Text(
             'Sections written: ${srs.sections.where((s) => s.body.trim().isNotEmpty).length} / ${srs.sections.length}',
             style: const TextStyle(fontSize: 12.5),
@@ -694,9 +774,9 @@ class _ProposalCard extends StatelessWidget {
       borderColor: PortalColors.blueBorder,
       header: Row(
         children: [
-          const _Pill(
+          _Pill(
             label: 'PROP',
-            bg: Color(0xFFE8EDFF),
+            bg: const Color(0xFFE8EDFF),
             fg: PortalColors.brandBlue,
           ),
           const SizedBox(width: 10),
@@ -711,15 +791,23 @@ class _ProposalCard extends StatelessWidget {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Type: ${proposal.projectType.label}',
-              style: const TextStyle(fontSize: 12.5)),
-          Text('Area: ${proposal.areaOfSpecialization}',
-              style: const TextStyle(fontSize: 12.5)),
-          Text('Supervisor: ${proposal.supervisorName}',
-              style: const TextStyle(fontSize: 12.5)),
+          Text(
+            'Type: ${proposal.projectType.label}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
+          Text(
+            'Area: ${proposal.areaOfSpecialization}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
+          Text(
+            'Supervisor: ${proposal.supervisorName}',
+            style: const TextStyle(fontSize: 12.5),
+          ),
           if (proposal.similarityIndex.isNotEmpty)
-            Text('Similarity index: ${proposal.similarityIndex}%',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Similarity index: ${proposal.similarityIndex}%',
+              style: const TextStyle(fontSize: 12.5),
+            ),
         ],
       ),
       actions: [
@@ -758,11 +846,13 @@ class _MeetingLogTab extends StatelessWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   Widget build(BuildContext context) {
@@ -804,6 +894,7 @@ class _MeetingLogTab extends StatelessWidget {
           student: student,
           teacherNames: teacherNames,
           fypRepository: fypRepository,
+          studentChoices: studentChoices,
         ),
       ),
     );
@@ -842,17 +933,23 @@ class _MeetingCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (log.workDoneSinceLastMeeting.isNotEmpty)
-            Text('Work done: ${log.workDoneSinceLastMeeting}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Work done: ${log.workDoneSinceLastMeeting}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           if (log.tasksAssigned.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Tasks assigned: ${log.tasksAssigned}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Tasks assigned: ${log.tasksAssigned}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
           if (log.nextMeetingDate.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text('Next meeting: ${log.nextMeetingDate}',
-                style: const TextStyle(fontSize: 12.5)),
+            Text(
+              'Next meeting: ${log.nextMeetingDate}',
+              style: const TextStyle(fontSize: 12.5),
+            ),
           ],
         ],
       ),
@@ -874,20 +971,13 @@ class _MeetingCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Tab 6 — Evaluations (read-only marks set by examiners)
+// Tab 6 — Evaluations (marks are intentionally hidden from students)
 // ============================================================================
 class _EvaluationsTab extends StatelessWidget {
-  const _EvaluationsTab({
-    required this.student,
-    required this.fypRepository,
-  });
-
-  final StudentRecord student;
-  final FypRepository fypRepository;
+  const _EvaluationsTab();
 
   @override
   Widget build(BuildContext context) {
-    final mine = fypRepository.evaluationsForRollNo(student.rollNo);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
@@ -896,68 +986,14 @@ class _EvaluationsTab extends StatelessWidget {
           color: const Color(0xFFB91C1C),
           title: 'Evaluations',
           message:
-              'Marks entered by your evaluation panel appear here once they finish. Both Proposal and SRS evaluations are listed.',
+              'Evaluation records are kept with the FYP coordinator, supervisor, and examiners. Marks are not shown in the student portal.',
         ),
         const SizedBox(height: 14),
-        if (mine.isEmpty)
-          const _EmptyHint(text: 'No evaluations have been recorded yet.')
-        else
-          for (final evaluation in mine)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _EvaluationCard(evaluation: evaluation),
-            ),
+        const _EmptyHint(
+          text:
+              'Your official result will be handled by the department. Contact your supervisor or FYP coordinator when results are announced.',
+        ),
       ],
-    );
-  }
-}
-
-class _EvaluationCard extends StatelessWidget {
-  const _EvaluationCard({required this.evaluation});
-
-  final FypEvaluation evaluation;
-
-  @override
-  Widget build(BuildContext context) {
-    return _RecordCard(
-      borderColor: const Color(0xFFFCA5A5),
-      header: Row(
-        children: [
-          _Pill(
-            label: evaluation.kind.label.toUpperCase(),
-            bg: const Color(0xFFFEE2E2),
-            fg: const Color(0xFFB91C1C),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              evaluation.projectTitle,
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-          ),
-          _StatusChip(
-              label: '${evaluation.marksObtained}/${evaluation.marksMax}'),
-        ],
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Examiner: ${evaluation.examinerName}',
-              style: const TextStyle(fontSize: 12.5)),
-          Text('Supervised by: ${evaluation.supervisorName}',
-              style: const TextStyle(fontSize: 12.5)),
-          const SizedBox(height: 6),
-          for (final row in evaluation.rubric)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                '${row.label}  —  ${row.score}/${row.maxMarks}',
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-        ],
-      ),
-      actions: const [],
     );
   }
 }
@@ -983,9 +1019,7 @@ class _IntroCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [color, color.withValues(alpha: 0.65)],
-        ),
+        gradient: PortalColors.themedAccentGradient(color),
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
@@ -1035,9 +1069,9 @@ class _ListHeading extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-              color: PortalColors.textPrimary,
-            ),
+          fontWeight: FontWeight.w800,
+          color: PortalColors.textPrimary,
+        ),
       ),
     );
   }
@@ -1169,12 +1203,14 @@ class _FypGroupFormPage extends StatefulWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final FypPhase phase;
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   State<_FypGroupFormPage> createState() => _FypGroupFormPageState();
@@ -1225,15 +1261,7 @@ class _FypGroupFormPageState extends State<_FypGroupFormPage> {
       term: _termController.text.trim().isEmpty
           ? _defaultTerm()
           : _termController.text.trim(),
-      members: [
-        for (var i = 0; i < _members.length; i++)
-          FypMember(
-            serialNo: i + 1,
-            rollNo: _members[i].rollNo.text.trim(),
-            name: _members[i].name.text.trim(),
-            email: _members[i].email.text.trim(),
-          ),
-      ],
+      members: _membersFromInputs(_members),
       preferredSupervisor: _supervisor ?? '',
       preferredCoSupervisor: _coSupervisor ?? '',
       joinedWhatsApp: _joinedWhatsApp,
@@ -1289,6 +1317,7 @@ class _FypGroupFormPageState extends State<_FypGroupFormPage> {
                         memberIndex: index + 1,
                         inputs: _members[index],
                         requiredFirst: true,
+                        studentChoices: widget.studentChoices,
                       ),
                     ),
                 ],
@@ -1373,7 +1402,9 @@ class _FypGroupFormPageState extends State<_FypGroupFormPage> {
       ),
       items: [
         const DropdownMenuItem<String>(
-            value: null, child: Text('Not selected')),
+          value: null,
+          child: Text('Not selected'),
+        ),
         for (final name in widget.teacherNames)
           DropdownMenuItem<String>(
             value: name,
@@ -1393,11 +1424,13 @@ class _AllocationFormPage extends StatefulWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   State<_AllocationFormPage> createState() => _AllocationFormPageState();
@@ -1456,16 +1489,7 @@ class _AllocationFormPageState extends State<_AllocationFormPage> {
       term: _termController.text.trim(),
       projectTitle: _titleController.text.trim(),
       expectedOutcome: _outcomeController.text.trim(),
-      members: [
-        for (var i = 0; i < _members.length; i++)
-          FypMember(
-            serialNo: i + 1,
-            rollNo: _members[i].rollNo.text.trim(),
-            name: _members[i].name.text.trim(),
-            email: _members[i].email.text.trim(),
-            cgpa: _members[i].cgpa.text.trim(),
-          ),
-      ],
+      members: _membersFromInputs(_members),
       supervisorName: _supervisor ?? '',
       supervisorEmail: _supEmailController.text.trim(),
       coSupervisorName: _coSupervisor ?? '',
@@ -1531,6 +1555,7 @@ class _AllocationFormPageState extends State<_AllocationFormPage> {
                         inputs: _members[index],
                         showCgpa: true,
                         requiredFirst: true,
+                        studentChoices: widget.studentChoices,
                       ),
                     ),
                 ],
@@ -1626,11 +1651,13 @@ class _ProposalFormPage extends StatefulWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   State<_ProposalFormPage> createState() => _ProposalFormPageState();
@@ -1692,17 +1719,7 @@ class _ProposalFormPageState extends State<_ProposalFormPage> {
       projectType: _projectType,
       areaOfSpecialization: _areaController.text.trim(),
       title: _titleController.text.trim(),
-      members: [
-        for (var i = 0; i < _members.length; i++)
-          FypMember(
-            serialNo: i + 1,
-            rollNo: _members[i].rollNo.text.trim(),
-            name: _members[i].name.text.trim(),
-            email: _members[i].email.text.trim(),
-            cgpa: _members[i].cgpa.text.trim(),
-            phone: _members[i].phone.text.trim(),
-          ),
-      ],
+      members: _membersFromInputs(_members),
       supervisorName: _supervisor ?? '',
       supervisorDesignation: _supDesignationController.text.trim(),
       coSupervisorName: _coSupervisor ?? '',
@@ -1744,8 +1761,9 @@ class _ProposalFormPageState extends State<_ProposalFormPage> {
                   const SizedBox(height: 10),
                   DropdownButtonFormField<FypProjectType>(
                     initialValue: _projectType,
-                    decoration:
-                        const InputDecoration(labelText: 'Type of project'),
+                    decoration: const InputDecoration(
+                      labelText: 'Type of project',
+                    ),
                     items: [
                       for (final type in FypProjectType.values)
                         DropdownMenuItem(value: type, child: Text(type.label)),
@@ -1785,6 +1803,7 @@ class _ProposalFormPageState extends State<_ProposalFormPage> {
                         showCgpa: true,
                         showPhone: true,
                         requiredFirst: true,
+                        studentChoices: widget.studentChoices,
                       ),
                     ),
                 ],
@@ -1884,11 +1903,13 @@ class _SrsFormPage extends StatefulWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   State<_SrsFormPage> createState() => _SrsFormPageState();
@@ -1952,15 +1973,7 @@ class _SrsFormPageState extends State<_SrsFormPage> {
     final created = widget.fypRepository.createSrs(
       term: _term.text.trim(),
       title: _title.text.trim(),
-      members: [
-        for (var i = 0; i < _members.length; i++)
-          FypMember(
-            serialNo: i + 1,
-            rollNo: _members[i].rollNo.text.trim(),
-            name: _members[i].name.text.trim(),
-            email: _members[i].email.text.trim(),
-          ),
-      ],
+      members: _membersFromInputs(_members),
       supervisorName: _supervisor ?? '',
       coSupervisorName: _coSupervisor ?? '',
       overallDescription: _overall.text.trim(),
@@ -1983,10 +1996,7 @@ class _SrsFormPageState extends State<_SrsFormPage> {
       controller: controller,
       minLines: 3,
       maxLines: 8,
-      decoration: InputDecoration(
-        labelText: label,
-        helperText: helperText,
-      ),
+      decoration: InputDecoration(labelText: label, helperText: helperText),
     );
   }
 
@@ -2035,6 +2045,7 @@ class _SrsFormPageState extends State<_SrsFormPage> {
                         memberIndex: index + 1,
                         inputs: _members[index],
                         requiredFirst: true,
+                        studentChoices: widget.studentChoices,
                       ),
                     ),
                 ],
@@ -2060,8 +2071,7 @@ class _SrsFormPageState extends State<_SrsFormPage> {
                       for (final name in widget.teacherNames)
                         DropdownMenuItem<String>(
                           value: name,
-                          child:
-                              Text(name, overflow: TextOverflow.ellipsis),
+                          child: Text(name, overflow: TextOverflow.ellipsis),
                         ),
                     ],
                     onChanged: (v) => setState(() => _supervisor = v),
@@ -2082,8 +2092,7 @@ class _SrsFormPageState extends State<_SrsFormPage> {
                       for (final name in widget.teacherNames)
                         DropdownMenuItem<String>(
                           value: name,
-                          child:
-                              Text(name, overflow: TextOverflow.ellipsis),
+                          child: Text(name, overflow: TextOverflow.ellipsis),
                         ),
                     ],
                     onChanged: (v) => setState(() => _coSupervisor = v),
@@ -2123,10 +2132,7 @@ class _SrsFormPageState extends State<_SrsFormPage> {
                         'Performance, safety, security, usability, reliability, maintainability.',
                   ),
                   const SizedBox(height: 10),
-                  _sectionField(
-                    '5. Interface requirements',
-                    _interfaceReq,
-                  ),
+                  _sectionField('5. Interface requirements', _interfaceReq),
                   const SizedBox(height: 10),
                   _sectionField(
                     '6. Use cases',
@@ -2164,11 +2170,13 @@ class _MeetingLogFormPage extends StatefulWidget {
     required this.student,
     required this.teacherNames,
     required this.fypRepository,
+    required this.studentChoices,
   });
 
   final StudentRecord student;
   final List<String> teacherNames;
   final FypRepository fypRepository;
+  final List<StudentRecord> studentChoices;
 
   @override
   State<_MeetingLogFormPage> createState() => _MeetingLogFormPageState();
@@ -2230,15 +2238,7 @@ class _MeetingLogFormPageState extends State<_MeetingLogFormPage> {
       projectTitle: _titleController.text.trim(),
       supervisorName: _supervisor ?? '',
       program: _program,
-      members: [
-        for (var i = 0; i < _members.length; i++)
-          FypMember(
-            serialNo: i + 1,
-            rollNo: _members[i].rollNo.text.trim(),
-            name: _members[i].name.text.trim(),
-            email: _members[i].email.text.trim(),
-          ),
-      ],
+      members: _membersFromInputs(_members),
       meetingDate: _meetingDate.text.trim(),
       previousMeetingDate: _previousMeetingDate.text.trim(),
       workDoneSinceLastMeeting: _workDone.text.trim(),
@@ -2279,12 +2279,13 @@ class _MeetingLogFormPageState extends State<_MeetingLogFormPage> {
                     ),
                     items: [
                       const DropdownMenuItem<String>(
-                          value: null, child: Text('Not selected')),
+                        value: null,
+                        child: Text('Not selected'),
+                      ),
                       for (final name in widget.teacherNames)
                         DropdownMenuItem<String>(
                           value: name,
-                          child:
-                              Text(name, overflow: TextOverflow.ellipsis),
+                          child: Text(name, overflow: TextOverflow.ellipsis),
                         ),
                     ],
                     onChanged: (v) => setState(() => _supervisor = v),
@@ -2319,8 +2320,7 @@ class _MeetingLogFormPageState extends State<_MeetingLogFormPage> {
                         ChoiceChip(
                           label: Text(program.label),
                           selected: _program == program,
-                          onSelected: (_) =>
-                              setState(() => _program = program),
+                          onSelected: (_) => setState(() => _program = program),
                         ),
                     ],
                   ),
@@ -2339,6 +2339,7 @@ class _MeetingLogFormPageState extends State<_MeetingLogFormPage> {
                         memberIndex: index + 1,
                         inputs: _members[index],
                         requiredFirst: true,
+                        studentChoices: widget.studentChoices,
                       ),
                     ),
                 ],
@@ -2394,6 +2395,28 @@ String _defaultTerm() {
 String? _required(String? value) =>
     (value == null || value.trim().isEmpty) ? 'Required' : null;
 
+List<FypMember> _membersFromInputs(List<_MemberInputs> inputs) {
+  final members = <FypMember>[];
+  for (final input in inputs) {
+    final rollNo = input.rollNo.text.trim();
+    if (rollNo.isEmpty) continue;
+    final name = input.name.text.trim();
+    members.add(
+      FypMember(
+        serialNo: members.length + 1,
+        rollNo: rollNo,
+        name: name.isEmpty ? rollNo : name,
+        email: input.email.text.trim().isEmpty
+            ? '$rollNo@student.local'
+            : input.email.text.trim(),
+        cgpa: input.cgpa.text.trim(),
+        phone: input.phone.text.trim(),
+      ),
+    );
+  }
+  return members;
+}
+
 class _MemberInputs {
   _MemberInputs({
     required this.rollNo,
@@ -2407,7 +2430,9 @@ class _MemberInputs {
     return _MemberInputs(
       rollNo: TextEditingController(text: rollNo),
       name: TextEditingController(text: name),
-      email: TextEditingController(),
+      email: TextEditingController(
+        text: rollNo.trim().isEmpty ? '' : '${rollNo.trim()}@student.local',
+      ),
       cgpa: TextEditingController(),
       phone: TextEditingController(),
     );
@@ -2435,6 +2460,7 @@ class _MemberInputCard extends StatelessWidget {
     this.showCgpa = false,
     this.showPhone = false,
     this.requiredFirst = false,
+    this.studentChoices = const [],
   });
 
   final int memberIndex;
@@ -2442,6 +2468,7 @@ class _MemberInputCard extends StatelessWidget {
   final bool showCgpa;
   final bool showPhone;
   final bool requiredFirst;
+  final List<StudentRecord> studentChoices;
 
   @override
   Widget build(BuildContext context) {
@@ -2463,23 +2490,32 @@ class _MemberInputCard extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
-          TextFormField(
-            controller: inputs.rollNo,
-            decoration: const InputDecoration(
-              labelText: 'Roll No',
-              prefixIcon: Icon(Icons.badge_outlined),
+          if (studentChoices.isEmpty) ...[
+            TextFormField(
+              controller: inputs.rollNo,
+              decoration: const InputDecoration(
+                labelText: 'Roll No',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+              validator: validator(),
             ),
-            validator: validator(),
-          ),
-          const SizedBox(height: 8),
-          TextFormField(
-            controller: inputs.name,
-            decoration: const InputDecoration(
-              labelText: 'Name',
-              prefixIcon: Icon(Icons.person_outline),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: inputs.name,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+              validator: validator(),
             ),
-            validator: validator(),
-          ),
+          ] else
+            _StudentPickerField(
+              memberIndex: memberIndex,
+              inputs: inputs,
+              students: studentChoices,
+              locked: memberIndex == 1,
+              validator: validator(),
+            ),
           const SizedBox(height: 8),
           TextFormField(
             controller: inputs.email,
@@ -2512,6 +2548,93 @@ class _MemberInputCard extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _StudentPickerField extends StatelessWidget {
+  const _StudentPickerField({
+    required this.memberIndex,
+    required this.inputs,
+    required this.students,
+    required this.locked,
+    required this.validator,
+  });
+
+  final int memberIndex;
+  final _MemberInputs inputs;
+  final List<StudentRecord> students;
+  final bool locked;
+  final String? Function(String?)? validator;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = inputs.rollNo.text.trim();
+    final knownRolls = {for (final student in students) student.rollNo};
+    final allStudents = [
+      ...students,
+      if (current.isNotEmpty && !knownRolls.contains(current))
+        StudentRecord(
+          rollNo: current,
+          studentName: inputs.name.text.trim(),
+          program: '',
+          semester: '',
+          section: '',
+          sessionEnrolled: '',
+          currentSession: '',
+          courses: const [],
+        ),
+    ];
+
+    return DropdownButtonFormField<String>(
+      initialValue: current.isEmpty ? '' : current,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'Student',
+        prefixIcon: Icon(Icons.badge_outlined),
+      ),
+      validator: validator,
+      items: [
+        if (!locked || current.isEmpty)
+          const DropdownMenuItem<String>(
+            value: '',
+            child: Text('Not selected'),
+          ),
+        for (final student in allStudents)
+          DropdownMenuItem<String>(
+            value: student.rollNo,
+            child: Text(
+              '${student.rollNo} - ${student.studentName}',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onChanged: locked
+          ? null
+          : (rollNo) {
+              final selected = allStudents.firstWhere(
+                (student) => student.rollNo == rollNo,
+                orElse: () => const StudentRecord(
+                  rollNo: '',
+                  studentName: '',
+                  program: '',
+                  semester: '',
+                  section: '',
+                  sessionEnrolled: '',
+                  currentSession: '',
+                  courses: [],
+                ),
+              );
+              inputs.rollNo.text = selected.rollNo;
+              inputs.name.text = selected.studentName;
+              inputs.email.text = selected.rollNo.isEmpty
+                  ? ''
+                  : '${selected.rollNo}@student.local';
+              if (selected.rollNo.isEmpty) {
+                inputs.cgpa.clear();
+                inputs.phone.clear();
+              }
+            },
     );
   }
 }
@@ -2565,9 +2688,9 @@ Future<void> _showQrSheet(
           children: [
             Text(
               title,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 14),
             Container(
@@ -2587,7 +2710,7 @@ Future<void> _showQrSheet(
             SelectableText(
               code,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.w800,
                 color: PortalColors.brandBlue,
               ),
